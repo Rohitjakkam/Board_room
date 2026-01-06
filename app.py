@@ -10,7 +10,7 @@ from PIL import Image
 import pdf2image
 
 # Configure Gemini
-genai.configure(api_key=st.secrets.get("GEMINI_API_KEY", "AIzaSyBdpB6q2pMJRzIeO6AvgDXP8SbzyDfVN-0"))
+genai.configure(api_key=st.secrets.get("GEMINI_API_KEY", ""))
 
 @dataclass
 class BoardMember:
