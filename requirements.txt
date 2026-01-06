@@ -1,3 +1,4 @@
 google-generativeai
 pillow
 pdf2image
+PyPDF2
