@@ -881,7 +881,7 @@ else:
                 
                 st.metric(
                     metric_name.replace('_', ' ').title(),
-                    f"{value:.1f}{unit}"
+                    f"{float(value):.1f}{unit}"
                 )
             
             st.divider()
