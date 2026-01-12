@@ -39,6 +39,14 @@ class PerformanceAnalytics:
     hint_count: int = 0
     consultation_count: int = 0
 
+    # Intelligent scenario tracking
+    topics_covered: List[str] = field(default_factory=list)  # All topics tested
+    topic_scores: Dict[str, List[float]] = field(default_factory=dict)  # Scores per topic
+    frameworks_tested: List[str] = field(default_factory=list)  # All frameworks used
+    framework_mastery: Dict[str, float] = field(default_factory=dict)  # Mastery level per framework
+    scenario_history: List[Dict[str, Any]] = field(default_factory=list)  # Full scenario history
+    last_topics_used: List[str] = field(default_factory=list)  # Last 3 topics to avoid repetition
+
 class BoardMeetingSimulation:
     def __init__(self):
         self.board_members = []
@@ -216,6 +224,22 @@ Extract 20-50 metrics, 5-15 board members, 5-10 problems. Return ONLY JSON."""
         # Difficulty-specific instructions
         difficulty_instructions = self._get_difficulty_instructions(difficulty)
 
+        # Intelligent topic targeting
+        topic_targeting = ""
+        if hasattr(self, 'module_topics') and self.module_topics and not is_first:
+            target_info = self.identify_target_topics(self.module_topics)
+
+            if target_info['primary_target']:
+                topic_targeting = f"""
+INTELLIGENT TOPIC TARGETING:
+- PRIMARY FOCUS: {target_info['primary_target']}
+- REASON: {target_info['reason']}
+- PRIORITY: {target_info['priority']}
+- AVOID RECENTLY USED: {', '.join(target_info['avoid_topics']) if target_info['avoid_topics'] else 'None'}
+
+The scenario MUST focus on "{target_info['primary_target']}" to address this learning need.
+Do NOT use topics: {', '.join(target_info['avoid_topics']) if target_info['avoid_topics'] else 'None'}"""
+
         module_context = ""
         if self.module_content:
             module_context = f"""
@@ -230,7 +254,9 @@ CRITICAL REQUIREMENTS:
 - CEO must demonstrate module understanding to succeed
 
 ADAPTIVE DIFFICULTY LEVEL: {difficulty.value.upper()}
-{difficulty_instructions}"""
+{difficulty_instructions}
+
+{topic_targeting}"""
         
         if is_first:
             prompt = f"""Generate first board meeting scenario testing BOTH business acumen AND module knowledge.
@@ -796,6 +822,154 @@ EXPERT LEVEL ADJUSTMENTS:
 
         return recommendations
 
+    def update_scenario_analytics(self, scenario_data: Dict, score: float):
+        """Track scenario usage and topic performance"""
+        topic = scenario_data.get('module_connection', 'N/A')
+
+        # Track topic coverage
+        if topic not in self.performance.topics_covered:
+            self.performance.topics_covered.append(topic)
+
+        # Track topic scores
+        if topic not in self.performance.topic_scores:
+            self.performance.topic_scores[topic] = []
+        self.performance.topic_scores[topic].append(score)
+
+        # Update last topics (for repetition avoidance)
+        self.performance.last_topics_used.append(topic)
+        if len(self.performance.last_topics_used) > 3:
+            self.performance.last_topics_used.pop(0)
+
+        # Store scenario in history
+        self.performance.scenario_history.append({
+            'topic': topic,
+            'score': score,
+            'round': len(self.performance.scenario_history) + 1
+        })
+
+    def calculate_framework_mastery(self, topic: str) -> float:
+        """Calculate mastery level for a specific topic/framework (0-100)"""
+        if topic not in self.performance.topic_scores or not self.performance.topic_scores[topic]:
+            return 0.0
+
+        scores = self.performance.topic_scores[topic]
+        # Weight recent scores more heavily
+        if len(scores) == 1:
+            return scores[0]
+        elif len(scores) == 2:
+            return (scores[0] * 0.4 + scores[1] * 0.6)
+        else:
+            # Recent scores weighted more
+            recent = scores[-2:]
+            older = scores[:-2]
+            recent_avg = sum(recent) / len(recent)
+            older_avg = sum(older) / len(older) if older else recent_avg
+            return older_avg * 0.3 + recent_avg * 0.7
+
+    def identify_target_topics(self, all_available_topics: List[str]) -> Dict[str, Any]:
+        """Intelligently identify which topics to target in next scenario"""
+        target_info = {
+            'primary_target': None,
+            'reason': '',
+            'avoid_topics': self.performance.last_topics_used[:],
+            'priority': 'balanced'
+        }
+
+        # Not enough data yet - random selection
+        if len(self.performance.overall_scores) < 1:
+            target_info['reason'] = 'Initial exploration'
+            target_info['priority'] = 'exploration'
+            return target_info
+
+        # Identify weak topics (mastery < 65)
+        weak_untested = []
+        weak_tested = []
+
+        for topic_name in all_available_topics:
+            # Skip recently used topics
+            if topic_name in self.performance.last_topics_used:
+                continue
+
+            mastery = self.calculate_framework_mastery(topic_name)
+
+            if topic_name not in self.performance.topics_covered:
+                weak_untested.append(topic_name)
+            elif mastery < 65:
+                weak_tested.append((topic_name, mastery))
+
+        # Priority 1: Target weak tested topics (need remediation)
+        if weak_tested and len(self.performance.overall_scores) >= 2:
+            # Sort by lowest mastery
+            weak_tested.sort(key=lambda x: x[1])
+            target_info['primary_target'] = weak_tested[0][0]
+            target_info['reason'] = f'Remediation needed (mastery: {weak_tested[0][1]:.0f}%)'
+            target_info['priority'] = 'remediation'
+            return target_info
+
+        # Priority 2: Explore untested topics (coverage)
+        if weak_untested:
+            target_info['primary_target'] = weak_untested[0]
+            target_info['reason'] = 'Unexplored topic - assessing baseline'
+            target_info['priority'] = 'exploration'
+            return target_info
+
+        # Priority 3: Reinforce borderline topics (65-80)
+        borderline = []
+        for topic_name in all_available_topics:
+            if topic_name in self.performance.last_topics_used:
+                continue
+            mastery = self.calculate_framework_mastery(topic_name)
+            if 65 <= mastery < 80:
+                borderline.append((topic_name, mastery))
+
+        if borderline:
+            # Target lowest borderline topic
+            borderline.sort(key=lambda x: x[1])
+            target_info['primary_target'] = borderline[0][0]
+            target_info['reason'] = f'Reinforcement (mastery: {borderline[0][1]:.0f}%)'
+            target_info['priority'] = 'reinforcement'
+            return target_info
+
+        # Default: Balanced rotation (avoid last 3)
+        available = [t for t in all_available_topics if t not in self.performance.last_topics_used]
+        if available:
+            target_info['primary_target'] = available[0]
+            target_info['reason'] = 'Balanced rotation'
+            target_info['priority'] = 'balanced'
+
+        return target_info
+
+    def get_scenario_intelligence_summary(self) -> Dict[str, Any]:
+        """Get summary of intelligent scenario targeting"""
+        summary = {
+            'topics_covered': len(self.performance.topics_covered),
+            'total_available': 0,  # Will be set by caller
+            'coverage_percentage': 0,
+            'weakest_topic': None,
+            'strongest_topic': None,
+            'next_target_reason': ''
+        }
+
+        # Find weakest topic
+        if self.performance.topic_scores:
+            topic_masteries = []
+            for topic, scores in self.performance.topic_scores.items():
+                mastery = self.calculate_framework_mastery(topic)
+                topic_masteries.append((topic, mastery))
+
+            if topic_masteries:
+                topic_masteries.sort(key=lambda x: x[1])
+                summary['weakest_topic'] = {
+                    'name': topic_masteries[0][0],
+                    'mastery': topic_masteries[0][1]
+                }
+                summary['strongest_topic'] = {
+                    'name': topic_masteries[-1][0],
+                    'mastery': topic_masteries[-1][1]
+                }
+
+        return summary
+
 # ==================== STREAMLIT UI ====================
 
 st.set_page_config(
@@ -924,7 +1098,13 @@ KEY TERMINOLOGY:
 
 ASSESSMENT CRITERIA:
 {chr(10).join(['- ' + c for c in module_data.get('assessment_criteria', [])])}"""
-                    
+
+                    # Extract topic names for intelligent targeting
+                    topic_names = [t['name'] for t in module_data.get('topics', [])]
+                    framework_names = [f['name'] for f in module_data.get('frameworks', [])]
+                    # Combine topics and frameworks as targets
+                    st.session_state.simulation.module_topics = topic_names + framework_names
+
                     st.session_state.module_data = module_data
                     
                     # Initialize simulation state
@@ -1277,17 +1457,26 @@ else:
                     st.caption(f"**Current Level:** {diff_info['emoji']} {diff_info['name']}")
                     st.caption(f"_{diff_info['description']}_")
 
+                    # Topic coverage
+                    if st.session_state.simulation.module_topics:
+                        total_topics = len(st.session_state.simulation.module_topics)
+                        covered = len(st.session_state.simulation.performance.topics_covered)
+                        coverage = (covered / total_topics * 100) if total_topics > 0 else 0
+                        st.caption(f"**📊 Coverage:** {covered}/{total_topics} topics ({coverage:.0f}%)")
+
                     # Weak topics
                     if learning_path['review_topics']:
                         st.write("**📝 Topics to Review:**")
                         for topic in learning_path['review_topics'][:3]:
-                            st.caption(f"• {topic}")
+                            mastery = st.session_state.simulation.calculate_framework_mastery(topic)
+                            st.caption(f"• {topic} ({mastery:.0f}% mastery)")
 
                     # Strengths
                     if learning_path['strengths']:
                         st.write("**✅ Strong Areas:**")
                         for topic in learning_path['strengths'][:3]:
-                            st.caption(f"• {topic}")
+                            mastery = st.session_state.simulation.calculate_framework_mastery(topic)
+                            st.caption(f"• {topic} ({mastery:.0f}% mastery)")
 
                     # Suggested actions
                     if learning_path['suggested_actions']:
@@ -1334,9 +1523,23 @@ else:
             diff_info = st.session_state.simulation.get_difficulty_descriptor()
             col_diff1, col_diff2 = st.columns([3, 1])
             with col_diff1:
-                # Show module connection
+                # Show module connection with targeting reason
                 if 'module_connection' in scenario_data:
-                    st.info(f"📚 **Module Topic Being Tested:** {scenario_data['module_connection']}")
+                    topic = scenario_data['module_connection']
+                    topic_text = f"📚 **Module Topic:** {topic}"
+
+                    # Show why this topic was chosen (if available)
+                    if st.session_state.round > 1 and hasattr(st.session_state.simulation, 'module_topics'):
+                        if topic in st.session_state.simulation.performance.topics_covered:
+                            mastery = st.session_state.simulation.calculate_framework_mastery(topic)
+                            if mastery < 65:
+                                topic_text += f" • 🎯 *Remediation focus ({mastery:.0f}% mastery)*"
+                            elif mastery < 80:
+                                topic_text += f" • 📈 *Reinforcement ({mastery:.0f}% mastery)*"
+                        else:
+                            topic_text += " • 🔍 *New topic exploration*"
+
+                    st.info(topic_text)
             with col_diff2:
                 st.metric(
                     label="Difficulty",
@@ -1440,6 +1643,10 @@ else:
                             eval_result,
                             scenario_data.get('module_connection', 'N/A')
                         )
+
+                        # Update scenario analytics (intelligent targeting)
+                        overall_score = eval_result.get('overall_score', 0)
+                        st.session_state.simulation.update_scenario_analytics(scenario_data, overall_score)
 
                         # Check if difficulty changed
                         new_difficulty = st.session_state.simulation.performance.current_difficulty
