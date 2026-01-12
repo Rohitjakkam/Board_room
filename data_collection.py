@@ -542,9 +542,12 @@ def main():
                 st.subheader("📊 Metrics")
                 metrics = company_data.get('metrics', {})
 
+                # Priority options for metrics
+                priority_options = ["General", "High", "Medium"]
+
                 # Add new metric
                 with st.expander("➕ Add New Metric", expanded=False):
-                    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+                    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
                     with col1:
                         new_metric_name = st.text_input("Metric Name (key)", key="new_metric_name", placeholder="e.g., market_share")
                     with col2:
@@ -553,13 +556,16 @@ def main():
                         new_metric_unit = st.text_input("Unit", key="new_metric_unit", placeholder="e.g., %")
                     with col4:
                         new_metric_desc = st.text_input("Description", key="new_metric_desc", placeholder="e.g., Market Share")
+                    with col5:
+                        new_metric_priority = st.selectbox("Priority", options=priority_options, key="new_metric_priority", index=0)
 
                     if st.button("Add Metric", key="add_metric_btn"):
                         if new_metric_name and new_metric_name not in metrics:
                             st.session_state.audit_data['company_data']['metrics'][new_metric_name] = {
                                 "value": new_metric_value,
                                 "unit": new_metric_unit,
-                                "description": new_metric_desc
+                                "description": new_metric_desc,
+                                "priority": new_metric_priority
                             }
                             st.session_state.audit_modified = True
                             st.success(f"Added metric: {new_metric_name}")
@@ -574,7 +580,7 @@ def main():
                     metrics_to_remove = []
                     for metric_key, metric_info in metrics.items():
                         st.markdown(f"**{metric_key}**")
-                        col1, col2, col3, col4 = st.columns([1, 1, 2, 0.5])
+                        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 0.5])
 
                         if isinstance(metric_info, dict):
                             with col1:
@@ -611,6 +617,20 @@ def main():
                                     st.session_state.audit_modified = True
 
                             with col4:
+                                current_priority = metric_info.get('priority', 'General')
+                                priority_idx = priority_options.index(current_priority) if current_priority in priority_options else 0
+                                new_priority = st.selectbox(
+                                    "Priority",
+                                    options=priority_options,
+                                    index=priority_idx,
+                                    key=f"metric_priority_{metric_key}",
+                                    label_visibility="collapsed"
+                                )
+                                if new_priority != current_priority:
+                                    st.session_state.audit_data['company_data']['metrics'][metric_key]['priority'] = new_priority
+                                    st.session_state.audit_modified = True
+
+                            with col5:
                                 if st.button("🗑️", key=f"del_metric_{metric_key}", help="Remove this metric"):
                                     metrics_to_remove.append(metric_key)
 
@@ -1366,14 +1386,135 @@ def main():
                     else:
                         st.error("Please enter a session name")
 
-            # Export as JSON
+            # View and Export JSON
             st.divider()
-            with st.expander("📤 Export Data"):
+            st.subheader("📄 View & Download JSON")
+
+            # View JSON options
+            view_tab1, view_tab2, view_tab3 = st.tabs(["📋 Full Data", "🏢 Company Only", "📚 Module Only"])
+
+            with view_tab1:
+                st.markdown("**Complete Session Data**")
+                full_json = json.dumps(st.session_state.audit_data, indent=2, ensure_ascii=False)
+
+                # Statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Size", f"{len(full_json):,} chars")
+                with col2:
+                    metrics_count = len(st.session_state.audit_data.get('company_data', {}).get('metrics', {}))
+                    st.metric("Metrics", metrics_count)
+                with col3:
+                    members_count = len(st.session_state.audit_data.get('company_data', {}).get('board_members', []))
+                    st.metric("Board Members", members_count)
+
+                # View JSON
+                with st.expander("👁️ View Full JSON", expanded=False):
+                    st.code(full_json, language="json")
+
+                # Download buttons
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="⬇️ Download Full JSON",
+                        data=full_json,
+                        file_name=f"full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json",
+                        key="download_full_json"
+                    )
+                with col2:
+                    # Minified version
+                    minified_json = json.dumps(st.session_state.audit_data, ensure_ascii=False)
+                    st.download_button(
+                        label="⬇️ Download Minified JSON",
+                        data=minified_json,
+                        file_name=f"full_export_minified_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json",
+                        key="download_full_minified"
+                    )
+
+            with view_tab2:
+                st.markdown("**Company Data Only**")
+                company_json = json.dumps(st.session_state.audit_data.get('company_data', {}), indent=2, ensure_ascii=False)
+
+                # Statistics
+                company_data_view = st.session_state.audit_data.get('company_data', {})
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Size", f"{len(company_json):,} chars")
+                with col2:
+                    st.metric("Metrics", len(company_data_view.get('metrics', {})))
+                with col3:
+                    st.metric("Board Members", len(company_data_view.get('board_members', [])))
+                with col4:
+                    st.metric("Committees", len(company_data_view.get('committees', [])))
+
+                # View JSON
+                with st.expander("👁️ View Company JSON", expanded=False):
+                    st.code(company_json, language="json")
+
+                # Download
                 st.download_button(
-                    label="Download as JSON",
-                    data=json.dumps(st.session_state.audit_data, indent=2, ensure_ascii=False),
-                    file_name=f"audit_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
+                    label="⬇️ Download Company JSON",
+                    data=company_json,
+                    file_name=f"company_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    key="download_company_json"
+                )
+
+            with view_tab3:
+                st.markdown("**Module Data Only**")
+                module_json = json.dumps(st.session_state.audit_data.get('module_data', {}), indent=2, ensure_ascii=False)
+
+                # Statistics
+                module_data_view = st.session_state.audit_data.get('module_data', {})
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Size", f"{len(module_json):,} chars")
+                with col2:
+                    st.metric("Topics", len(module_data_view.get('topics', [])))
+                with col3:
+                    st.metric("Key Terms", len(module_data_view.get('key_terms', {})))
+                with col4:
+                    st.metric("Frameworks", len(module_data_view.get('frameworks', [])))
+
+                # View JSON
+                with st.expander("👁️ View Module JSON", expanded=False):
+                    st.code(module_json, language="json")
+
+                # Download
+                st.download_button(
+                    label="⬇️ Download Module JSON",
+                    data=module_json,
+                    file_name=f"module_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    key="download_module_json"
+                )
+
+            # Copy to clipboard helper
+            st.divider()
+            with st.expander("📋 Copy JSON to Clipboard"):
+                st.markdown("Select which data to copy:")
+                copy_option = st.radio(
+                    "Select data",
+                    options=["Full Data", "Company Only", "Module Only"],
+                    horizontal=True,
+                    key="copy_option",
+                    label_visibility="collapsed"
+                )
+
+                if copy_option == "Full Data":
+                    copy_data = json.dumps(st.session_state.audit_data, indent=2, ensure_ascii=False)
+                elif copy_option == "Company Only":
+                    copy_data = json.dumps(st.session_state.audit_data.get('company_data', {}), indent=2, ensure_ascii=False)
+                else:
+                    copy_data = json.dumps(st.session_state.audit_data.get('module_data', {}), indent=2, ensure_ascii=False)
+
+                st.text_area(
+                    "JSON Data (select all and copy)",
+                    value=copy_data,
+                    height=200,
+                    key="copy_json_area"
                 )
 
     with tab4:
