@@ -56,6 +56,8 @@ class BoardMeetingSimulation:
         self.metrics = {}
         self.performance = PerformanceAnalytics()
         self.available_hints = []
+        self.metrics_history = []  # Track metrics over time
+        self.initial_metrics = {}  # Store initial state
         
     def extract_pdf_with_gemini(self, pdf_file) -> str:
         """Use Gemini's native PDF processing"""
@@ -970,6 +972,372 @@ EXPERT LEVEL ADJUSTMENTS:
 
         return summary
 
+    def get_metric_status(self, metric_name: str, current_value: float, metric_type: str = "higher_is_better") -> Dict[str, Any]:
+        """
+        Determine if a metric is healthy, warning, or critical
+        Returns: {'status': 'healthy'|'warning'|'critical', 'emoji': '🟢'|'🟡'|'🔴', 'color': str}
+        """
+        # Get previous value if available
+        previous_value = None
+        if self.metrics_history:
+            prev_metrics = self.metrics_history[-1]
+            if metric_name in prev_metrics:
+                prev_val = prev_metrics[metric_name]
+                previous_value = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+
+        # Calculate change percentage if we have history
+        change_pct = 0
+        if previous_value and previous_value != 0:
+            change_pct = ((current_value - previous_value) / abs(previous_value)) * 100
+
+        # Determine status based on change and metric type
+        if metric_type == "higher_is_better":
+            if change_pct >= 5 or current_value > 0:
+                return {'status': 'healthy', 'emoji': '🟢', 'color': 'green'}
+            elif change_pct >= -5:
+                return {'status': 'warning', 'emoji': '🟡', 'color': 'yellow'}
+            else:
+                return {'status': 'critical', 'emoji': '🔴', 'color': 'red'}
+        else:  # lower_is_better
+            if change_pct <= -5:
+                return {'status': 'healthy', 'emoji': '🟢', 'color': 'green'}
+            elif change_pct <= 5:
+                return {'status': 'warning', 'emoji': '🟡', 'color': 'yellow'}
+            else:
+                return {'status': 'critical', 'emoji': '🔴', 'color': 'red'}
+
+    def categorize_metrics(self) -> Dict[str, List[tuple]]:
+        """
+        Categorize metrics into Financial, Operations, People, and Market
+        Returns dict with category names as keys and list of (metric_name, metric_data) tuples
+        """
+        categories = {
+            'Financial': [],
+            'Operations': [],
+            'People': [],
+            'Market': []
+        }
+
+        financial_keywords = ['revenue', 'profit', 'margin', 'cash', 'cost', 'expense', 'roi', 'debt', 'equity', 'earnings', 'ebitda']
+        operations_keywords = ['efficiency', 'productivity', 'capacity', 'utilization', 'inventory', 'production', 'quality', 'defect', 'cycle']
+        people_keywords = ['employee', 'satisfaction', 'turnover', 'retention', 'engagement', 'morale', 'headcount', 'hr']
+        market_keywords = ['market', 'share', 'customer', 'growth', 'sales', 'acquisition', 'churn', 'nps', 'brand']
+
+        for name, data in self.metrics.items():
+            name_lower = name.lower()
+            categorized = False
+
+            for keyword in financial_keywords:
+                if keyword in name_lower:
+                    categories['Financial'].append((name, data))
+                    categorized = True
+                    break
+
+            if not categorized:
+                for keyword in operations_keywords:
+                    if keyword in name_lower:
+                        categories['Operations'].append((name, data))
+                        categorized = True
+                        break
+
+            if not categorized:
+                for keyword in people_keywords:
+                    if keyword in name_lower:
+                        categories['People'].append((name, data))
+                        categorized = True
+                        break
+
+            if not categorized:
+                for keyword in market_keywords:
+                    if keyword in name_lower:
+                        categories['Market'].append((name, data))
+                        categorized = True
+                        break
+
+            # If still not categorized, put in Operations as default
+            if not categorized:
+                categories['Operations'].append((name, data))
+
+        return categories
+
+    def get_top_movers(self, limit: int = 3) -> List[Dict[str, Any]]:
+        """
+        Get top N metrics with biggest changes from previous round
+        Returns list of dicts with metric name, change, and direction
+        """
+        if not self.metrics_history:
+            return []
+
+        movers = []
+        prev_metrics = self.metrics_history[-1]
+
+        for name, data in self.metrics.items():
+            current_val = data.get('value', data) if isinstance(data, dict) else data
+
+            if name in prev_metrics:
+                prev_val = prev_metrics[name]
+                prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+
+                if prev_val != 0:
+                    change_pct = ((current_val - prev_val) / abs(prev_val)) * 100
+                    movers.append({
+                        'name': name,
+                        'change_pct': change_pct,
+                        'current': current_val,
+                        'previous': prev_val
+                    })
+
+        # Sort by absolute change
+        movers.sort(key=lambda x: abs(x['change_pct']), reverse=True)
+        return movers[:limit]
+
+    def calculate_company_health_score(self) -> Dict[str, Any]:
+        """
+        Calculate overall company health score (0-100) based on all metrics
+        """
+        if not self.metrics_history or not self.initial_metrics:
+            return {'score': 50, 'status': 'baseline', 'emoji': '⚪'}
+
+        # Count positive and negative changes
+        positive_changes = 0
+        negative_changes = 0
+        total_changes = 0
+
+        prev_metrics = self.metrics_history[-1]
+
+        for name, data in self.metrics.items():
+            current_val = data.get('value', data) if isinstance(data, dict) else data
+
+            if name in prev_metrics:
+                prev_val = prev_metrics[name]
+                prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+
+                if prev_val != 0:
+                    change_pct = ((current_val - prev_val) / abs(prev_val)) * 100
+                    total_changes += 1
+
+                    if change_pct > 0:
+                        positive_changes += 1
+                    elif change_pct < 0:
+                        negative_changes += 1
+
+        # Calculate score
+        if total_changes == 0:
+            score = 50
+        else:
+            score = (positive_changes / total_changes) * 100
+
+        # Determine status
+        if score >= 70:
+            status = 'excellent'
+            emoji = '🟢'
+        elif score >= 50:
+            status = 'good'
+            emoji = '🟡'
+        elif score >= 30:
+            status = 'concerning'
+            emoji = '🟠'
+        else:
+            status = 'critical'
+            emoji = '🔴'
+
+        return {
+            'score': score,
+            'status': status,
+            'emoji': emoji,
+            'positive_count': positive_changes,
+            'negative_count': negative_changes,
+            'total_count': total_changes
+        }
+
+    def get_metric_targets(self, metric_name: str, current_value: float) -> Dict[str, Any]:
+        """
+        Get target values for a metric (aspirational goal)
+        """
+        # Use initial value as baseline
+        initial_val = None
+        if metric_name in self.initial_metrics:
+            initial_data = self.initial_metrics[metric_name]
+            initial_val = initial_data.get('value', initial_data) if isinstance(initial_data, dict) else initial_data
+
+        if initial_val is None:
+            initial_val = current_value
+
+        # Set target as 20% improvement from initial
+        target_val = initial_val * 1.20
+        progress = 0
+
+        if target_val != initial_val:
+            progress = ((current_value - initial_val) / (target_val - initial_val)) * 100
+            progress = max(0, min(100, progress))  # Clamp between 0-100
+
+        return {
+            'initial': initial_val,
+            'current': current_value,
+            'target': target_val,
+            'progress': progress
+        }
+
+    def get_changed_metrics(self, min_change_pct: float = 0.1) -> Dict[str, Any]:
+        """
+        Get only metrics that have changed since last round
+        Returns dict with 'improved', 'declined', and 'unchanged' lists
+        """
+        if not self.metrics_history:
+            return {'improved': [], 'declined': [], 'unchanged': []}
+
+        improved = []
+        declined = []
+        unchanged = []
+
+        prev_metrics = self.metrics_history[-1]
+
+        for name, data in self.metrics.items():
+            current_val = data.get('value', data) if isinstance(data, dict) else data
+
+            if name in prev_metrics:
+                prev_val = prev_metrics[name]
+                prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+
+                if prev_val != 0:
+                    change_pct = ((current_val - prev_val) / abs(prev_val)) * 100
+                    change_abs = current_val - prev_val
+
+                    metric_info = {
+                        'name': name,
+                        'current': current_val,
+                        'previous': prev_val,
+                        'change_abs': change_abs,
+                        'change_pct': change_pct,
+                        'unit': data.get('unit', '') if isinstance(data, dict) else ''
+                    }
+
+                    if abs(change_pct) < min_change_pct:
+                        unchanged.append(metric_info)
+                    elif change_pct > 0:
+                        improved.append(metric_info)
+                    else:
+                        declined.append(metric_info)
+
+        # Sort by absolute change percentage
+        improved.sort(key=lambda x: abs(x['change_pct']), reverse=True)
+        declined.sort(key=lambda x: abs(x['change_pct']), reverse=True)
+
+        return {
+            'improved': improved,
+            'declined': declined,
+            'unchanged': unchanged
+        }
+
+    def get_metric_history_for_chart(self, metric_name: str) -> Dict[str, list]:
+        """
+        Get historical values of a metric for charting
+        Returns dict with 'rounds' and 'values' lists
+        """
+        rounds = []
+        values = []
+
+        # Add historical values
+        for i, hist_metrics in enumerate(self.metrics_history, 1):
+            if metric_name in hist_metrics:
+                val = hist_metrics[metric_name]
+                val = val.get('value', val) if isinstance(val, dict) else val
+                rounds.append(f"R{i}")
+                values.append(float(val))
+
+        # Add current value
+        if metric_name in self.metrics:
+            current = self.metrics[metric_name]
+            current = current.get('value', current) if isinstance(current, dict) else current
+            rounds.append(f"R{len(self.metrics_history) + 1}")
+            values.append(float(current))
+
+        return {'rounds': rounds, 'values': values}
+
+    def get_all_health_scores_history(self) -> Dict[str, list]:
+        """
+        Calculate health score for each round
+        Returns dict with 'rounds' and 'scores' lists
+        """
+        rounds = []
+        scores = []
+
+        if len(self.metrics_history) < 2:
+            return {'rounds': [], 'scores': []}
+
+        # Calculate health for each historical point
+        for i in range(1, len(self.metrics_history)):
+            prev = self.metrics_history[i-1]
+            current = self.metrics_history[i]
+
+            positive = 0
+            total = 0
+
+            for name, data in current.items():
+                curr_val = data.get('value', data) if isinstance(data, dict) else data
+                if name in prev:
+                    prev_val = prev[name]
+                    prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+
+                    if prev_val != 0:
+                        change = ((curr_val - prev_val) / abs(prev_val)) * 100
+                        total += 1
+                        if change > 0:
+                            positive += 1
+
+            if total > 0:
+                score = (positive / total) * 100
+                rounds.append(f"R{i+1}")
+                scores.append(score)
+
+        # Add current health score
+        health = self.calculate_company_health_score()
+        if health['total_count'] > 0:
+            rounds.append(f"R{len(self.metrics_history) + 1}")
+            scores.append(health['score'])
+
+        return {'rounds': rounds, 'scores': scores}
+
+    def get_category_performance_scores(self) -> Dict[str, float]:
+        """
+        Calculate performance score for each category (0-100)
+        Based on percentage of metrics improving in each category
+        """
+        categories = self.categorize_metrics()
+        scores = {}
+
+        if not self.metrics_history:
+            return scores
+
+        prev_metrics = self.metrics_history[-1]
+
+        for category_name, category_metrics in categories.items():
+            if not category_metrics:
+                continue
+
+            positive = 0
+            total = 0
+
+            for name, data in category_metrics:
+                current_val = data.get('value', data) if isinstance(data, dict) else data
+
+                if name in prev_metrics:
+                    prev_val = prev_metrics[name]
+                    prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+
+                    if prev_val != 0:
+                        change_pct = ((current_val - prev_val) / abs(prev_val)) * 100
+                        total += 1
+                        if change_pct > 0:
+                            positive += 1
+
+            if total > 0:
+                scores[category_name] = (positive / total) * 100
+            else:
+                scores[category_name] = 50  # Neutral if no data
+
+        return scores
+
 # ==================== STREAMLIT UI ====================
 
 st.set_page_config(
@@ -1056,6 +1424,10 @@ if not st.session_state.initialized:
                     st.session_state.company_name = company_data.get('company_name', 'Your Company')
                     st.session_state.company_overview = company_data.get('company_overview', '')
                     st.session_state.simulation.metrics = company_data.get('metrics', {})
+
+                    # Store initial metrics for comparison and targets
+                    import copy
+                    st.session_state.simulation.initial_metrics = copy.deepcopy(st.session_state.simulation.metrics)
                     
                     st.session_state.simulation.board_members = [
                         BoardMember(
@@ -1377,28 +1749,396 @@ else:
     
     with st.sidebar:
         st.header("📊 Company Metrics")
-        
+
         metrics = st.session_state.simulation.metrics
-        
-        # Display first 12 metrics
-        for i, (name, data) in enumerate(list(metrics.items())[:12]):
-            val = data.get('value', 0) if isinstance(data, dict) else data
-            unit = data.get('unit', '') if isinstance(data, dict) else ''
-            st.metric(
-                name.replace('_', ' ').title(),
-                f"{float(val):.1f}{unit}"
-            )
-        
-        # Show remaining metrics in expander
-        if len(metrics) > 12:
-            with st.expander(f"View all {len(metrics)} metrics"):
-                for name, data in list(metrics.items())[12:]:
+
+        # PHASE 3: Company Health Dashboard (if we have history)
+        if st.session_state.simulation.metrics_history:
+            health = st.session_state.simulation.calculate_company_health_score()
+
+            col_health1, col_health2 = st.columns([1, 2])
+            with col_health1:
+                st.metric("Health Score", f"{health['score']:.0f}/100")
+            with col_health2:
+                st.markdown(f"### {health['emoji']}")
+                st.caption(f"**{health['status'].title()}**")
+
+            if health['total_count'] > 0:
+                st.caption(f"↗️ {health['positive_count']} improving • ↘️ {health['negative_count']} declining")
+
+            st.divider()
+
+        # PHASE 1: Top Movers (if we have history)
+        if st.session_state.simulation.metrics_history:
+            top_movers = st.session_state.simulation.get_top_movers(3)
+
+            if top_movers:
+                st.subheader("🔥 Top Movers")
+                for mover in top_movers:
+                    direction = "📈" if mover['change_pct'] > 0 else "📉"
+                    color = "green" if mover['change_pct'] > 0 else "red"
+
+                    st.markdown(f"**{direction} {mover['name'].replace('_', ' ').title()}**")
+
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.caption(f"Changed by {abs(mover['change_pct']):.1f}%")
+                    with col2:
+                        st.caption(f":{color}[{mover['change_pct']:+.0f}%]")
+
+                st.divider()
+
+        # NEW: Changed Metrics Only Section
+        if st.session_state.simulation.metrics_history:
+            changed = st.session_state.simulation.get_changed_metrics(min_change_pct=0.1)
+
+            with st.expander("🔄 Changed Metrics This Round", expanded=True):
+                col_imp, col_dec = st.columns(2)
+
+                with col_imp:
+                    st.markdown("**📈 Improved**")
+                    if changed['improved']:
+                        for metric in changed['improved'][:5]:
+                            st.caption(f"🟢 {metric['name'].replace('_', ' ').title()}")
+                            st.caption(f"   {metric['change_pct']:+.1f}% ({metric['change_abs']:+.1f}{metric['unit']})")
+                    else:
+                        st.caption("_No improvements_")
+
+                with col_dec:
+                    st.markdown("**📉 Declined**")
+                    if changed['declined']:
+                        for metric in changed['declined'][:5]:
+                            st.caption(f"🔴 {metric['name'].replace('_', ' ').title()}")
+                            st.caption(f"   {metric['change_pct']:.1f}% ({metric['change_abs']:.1f}{metric['unit']})")
+                    else:
+                        st.caption("_No declines_")
+
+                if changed['unchanged']:
+                    st.caption(f"⚪ {len(changed['unchanged'])} metrics unchanged")
+
+            st.divider()
+
+        # NEW: Health Score Trend Chart
+        if st.session_state.simulation.metrics_history and len(st.session_state.simulation.metrics_history) >= 1:
+            with st.expander("📈 Company Health Trend", expanded=False):
+                import pandas as pd
+                import plotly.graph_objects as go
+
+                health_data = st.session_state.simulation.get_all_health_scores_history()
+
+                if health_data['rounds']:
+                    # Create area chart for health score
+                    fig = go.Figure()
+
+                    fig.add_trace(go.Scatter(
+                        x=health_data['rounds'],
+                        y=health_data['scores'],
+                        mode='lines+markers',
+                        name='Health Score',
+                        line=dict(color='#00CC96', width=3),
+                        fill='tozeroy',
+                        fillcolor='rgba(0, 204, 150, 0.2)',
+                        marker=dict(size=8, symbol='circle')
+                    ))
+
+                    # Add threshold lines
+                    fig.add_hline(y=70, line_dash="dash", line_color="green",
+                                  annotation_text="Excellent", annotation_position="right")
+                    fig.add_hline(y=50, line_dash="dash", line_color="orange",
+                                  annotation_text="Good", annotation_position="right")
+                    fig.add_hline(y=30, line_dash="dash", line_color="red",
+                                  annotation_text="Concerning", annotation_position="right")
+
+                    fig.update_layout(
+                        title="Company Health Score Over Time",
+                        xaxis_title="Round",
+                        yaxis_title="Health Score (0-100)",
+                        yaxis_range=[0, 100],
+                        height=300,
+                        margin=dict(l=20, r=20, t=40, b=20),
+                        showlegend=False
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+        # NEW: Category Performance Radar Chart
+        if st.session_state.simulation.metrics_history:
+            with st.expander("🎯 Category Performance", expanded=False):
+                import plotly.graph_objects as go
+
+                cat_scores = st.session_state.simulation.get_category_performance_scores()
+
+                if cat_scores:
+                    categories_list = list(cat_scores.keys())
+                    values = list(cat_scores.values())
+
+                    # Close the radar chart
+                    categories_list.append(categories_list[0])
+                    values.append(values[0])
+
+                    fig = go.Figure()
+
+                    fig.add_trace(go.Scatterpolar(
+                        r=values,
+                        theta=categories_list,
+                        fill='toself',
+                        fillcolor='rgba(99, 110, 250, 0.3)',
+                        line=dict(color='rgb(99, 110, 250)', width=2),
+                        marker=dict(size=8)
+                    ))
+
+                    fig.update_layout(
+                        polar=dict(
+                            radialaxis=dict(
+                                visible=True,
+                                range=[0, 100],
+                                tickfont=dict(size=10)
+                            )
+                        ),
+                        showlegend=False,
+                        title="Category Health (% Improving)",
+                        height=350,
+                        margin=dict(l=40, r=40, t=60, b=20)
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Legend
+                    st.caption("**📊 Performance by Business Area**")
+                    for cat, score in cat_scores.items():
+                        emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
+                        st.caption(f"{emoji} {cat}: {score:.0f}% improving")
+
+            st.divider()
+
+        # NEW: Metric Trends - Interactive Line Chart
+        if st.session_state.simulation.metrics_history and len(st.session_state.simulation.metrics_history) >= 1:
+            with st.expander("📊 Metric Trends", expanded=False):
+                import plotly.graph_objects as go
+
+                # Let user select metrics to visualize
+                metric_names = list(st.session_state.simulation.metrics.keys())
+                selected_metrics = st.multiselect(
+                    "Select metrics to visualize:",
+                    options=metric_names[:15],  # Limit to first 15 for performance
+                    default=metric_names[:3] if len(metric_names) >= 3 else metric_names,
+                    key="metric_trend_selector"
+                )
+
+                if selected_metrics:
+                    fig = go.Figure()
+
+                    for metric_name in selected_metrics:
+                        history = st.session_state.simulation.get_metric_history_for_chart(metric_name)
+
+                        if history['rounds']:
+                            fig.add_trace(go.Scatter(
+                                x=history['rounds'],
+                                y=history['values'],
+                                mode='lines+markers',
+                                name=metric_name.replace('_', ' ').title(),
+                                line=dict(width=2),
+                                marker=dict(size=6)
+                            ))
+
+                    fig.update_layout(
+                        title="Selected Metrics Over Time",
+                        xaxis_title="Round",
+                        yaxis_title="Value",
+                        height=350,
+                        margin=dict(l=20, r=20, t=40, b=20),
+                        hovermode='x unified',
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        )
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+        # NEW: Current vs Initial Comparison Bar Chart
+        if st.session_state.simulation.initial_metrics:
+            with st.expander("📊 Current vs Initial Values", expanded=False):
+                import plotly.graph_objects as go
+                import pandas as pd
+
+                # Get top 10 metrics for comparison
+                comparison_data = []
+
+                for name, data in list(metrics.items())[:10]:
+                    current_val = data.get('value', data) if isinstance(data, dict) else data
+
+                    if name in st.session_state.simulation.initial_metrics:
+                        initial_data = st.session_state.simulation.initial_metrics[name]
+                        initial_val = initial_data.get('value', initial_data) if isinstance(initial_data, dict) else initial_data
+
+                        comparison_data.append({
+                            'Metric': name.replace('_', ' ').title(),
+                            'Initial': initial_val,
+                            'Current': current_val
+                        })
+
+                if comparison_data:
+                    df = pd.DataFrame(comparison_data)
+
+                    fig = go.Figure()
+
+                    fig.add_trace(go.Bar(
+                        name='Initial',
+                        x=df['Metric'],
+                        y=df['Initial'],
+                        marker_color='lightblue',
+                        text=df['Initial'].round(1),
+                        textposition='auto'
+                    ))
+
+                    fig.add_trace(go.Bar(
+                        name='Current',
+                        x=df['Metric'],
+                        y=df['Current'],
+                        marker_color='darkblue',
+                        text=df['Current'].round(1),
+                        textposition='auto'
+                    ))
+
+                    fig.update_layout(
+                        title="Initial vs Current Comparison (Top 10 Metrics)",
+                        xaxis_title="Metric",
+                        yaxis_title="Value",
+                        barmode='group',
+                        height=400,
+                        margin=dict(l=20, r=20, t=40, b=100),
+                        xaxis_tickangle=-45,
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        )
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+        # PHASE 2: Categorized Metrics with Color Coding
+        categories = st.session_state.simulation.categorize_metrics()
+
+        # Category emojis
+        category_emojis = {
+            'Financial': '💰',
+            'Operations': '⚙️',
+            'People': '👥',
+            'Market': '📈'
+        }
+
+        # Display metrics by category
+        for category_name, category_metrics in categories.items():
+            if not category_metrics:
+                continue
+
+            with st.expander(f"{category_emojis.get(category_name, '📊')} {category_name} ({len(category_metrics)})", expanded=(category_name == 'Financial')):
+                for name, data in category_metrics[:8]:  # Show first 8 in each category
                     val = data.get('value', 0) if isinstance(data, dict) else data
                     unit = data.get('unit', '') if isinstance(data, dict) else ''
-                    st.metric(
-                        name.replace('_', ' ').title(),
-                        f"{float(val):.1f}{unit}"
-                    )
+
+                    # PHASE 1: Color-coded status indicator
+                    status = st.session_state.simulation.get_metric_status(name, float(val))
+
+                    # PHASE 1: Calculate delta from previous round
+                    delta = None
+                    delta_color = "off"
+                    if st.session_state.simulation.metrics_history:
+                        prev_metrics = st.session_state.simulation.metrics_history[-1]
+                        if name in prev_metrics:
+                            prev_val = prev_metrics[name]
+                            prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+                            delta = float(val) - float(prev_val)
+                            delta_color = "normal"
+
+                    # PHASE 3: Get target info
+                    target_info = st.session_state.simulation.get_metric_targets(name, float(val))
+
+                    # Display with status emoji
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.metric(
+                            f"{status['emoji']} {name.replace('_', ' ').title()}",
+                            f"{float(val):.1f}{unit}",
+                            delta=f"{delta:.1f}{unit}" if delta is not None else None,
+                            delta_color=delta_color
+                        )
+                    with col2:
+                        # PHASE 3: Show progress bar for targets
+                        if st.session_state.simulation.initial_metrics:
+                            progress_pct = target_info['progress']
+                            st.caption("Target")
+                            st.progress(min(progress_pct / 100, 1.0))
+                            st.caption(f"{progress_pct:.0f}%")
+
+                # Show remaining metrics if there are more
+                if len(category_metrics) > 8:
+                    with st.expander(f"View all {len(category_metrics)} {category_name.lower()} metrics"):
+                        for name, data in category_metrics[8:]:
+                            val = data.get('value', 0) if isinstance(data, dict) else data
+                            unit = data.get('unit', '') if isinstance(data, dict) else ''
+
+                            status = st.session_state.simulation.get_metric_status(name, float(val))
+
+                            delta = None
+                            if st.session_state.simulation.metrics_history:
+                                prev_metrics = st.session_state.simulation.metrics_history[-1]
+                                if name in prev_metrics:
+                                    prev_val = prev_metrics[name]
+                                    prev_val = prev_val.get('value', prev_val) if isinstance(prev_val, dict) else prev_val
+                                    delta = float(val) - float(prev_val)
+
+                            st.metric(
+                                f"{status['emoji']} {name.replace('_', ' ').title()}",
+                                f"{float(val):.1f}{unit}",
+                                delta=f"{delta:.1f}{unit}" if delta is not None else None
+                            )
+
+        st.divider()
+
+        # PHASE 2: Progress vs Initial State
+        if st.session_state.simulation.initial_metrics:
+            with st.expander("📊 Progress vs Initial State"):
+                st.caption("**Comparing current metrics to initial baseline**")
+
+                improvement_count = 0
+                decline_count = 0
+
+                for name, data in list(metrics.items())[:10]:  # Show first 10
+                    current_val = data.get('value', data) if isinstance(data, dict) else data
+
+                    if name in st.session_state.simulation.initial_metrics:
+                        initial_data = st.session_state.simulation.initial_metrics[name]
+                        initial_val = initial_data.get('value', initial_data) if isinstance(initial_data, dict) else initial_data
+
+                        if initial_val != 0:
+                            change_pct = ((current_val - initial_val) / abs(initial_val)) * 100
+
+                            if change_pct > 0:
+                                improvement_count += 1
+                                icon = "🟢"
+                            elif change_pct < 0:
+                                decline_count += 1
+                                icon = "🔴"
+                            else:
+                                icon = "⚪"
+
+                            st.caption(f"{icon} {name.replace('_', ' ').title()}: {change_pct:+.1f}%")
+
+                st.caption(f"**Summary:** {improvement_count} improved, {decline_count} declined since start")
         
         # Module reference
         st.divider()
@@ -1633,6 +2373,11 @@ else:
                         })
                         
                         # Update metrics
+                        import copy
+                        # Store previous metrics in history before updating
+                        st.session_state.simulation.metrics_history.append(
+                            copy.deepcopy(st.session_state.simulation.metrics)
+                        )
                         st.session_state.simulation.metrics = new_metrics
 
                         # Store previous difficulty
