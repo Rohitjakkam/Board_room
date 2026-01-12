@@ -2,3 +2,5 @@ google-generativeai
 pillow
 pdf2image
 PyPDF2
+plotly>=5.18.0
+pandas>=2.0.0
