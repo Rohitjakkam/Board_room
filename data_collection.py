@@ -171,7 +171,66 @@ Extract 20-50 metrics, 5-15 board members, 5-10 problems. Return ONLY JSON."""
         st.error(f"Company parsing error: {e}")
         raise
 
-def save_extracted_data(company_data: Dict, module_data: Dict, session_name: str) -> str:
+def get_default_simulation_config() -> Dict:
+    """Return default simulation configuration"""
+    return {
+        "total_rounds": 5,
+        "initial_setup": {
+            "starting_scenario": "default",  # default, crisis, growth, stable, custom
+            "custom_scenario_text": "",  # Used when starting_scenario is "custom"
+            "initial_difficulty": "medium"
+        },
+        "rounds": [
+            {
+                "round_number": i + 1,
+                "round_type": "both",  # business, module, both
+                "difficulty": "medium",  # easy, medium, hard
+                "focus_area": None,  # Optional: specific topic/problem to focus on
+                "time_pressure": "normal"  # relaxed, normal, urgent
+            }
+            for i in range(5)
+        ],
+        "difficulty_settings": {
+            "easy": {
+                "question_complexity": "straightforward",
+                "board_pressure": "supportive",
+                "time_allocation": "generous",
+                "hints_available": True
+            },
+            "medium": {
+                "question_complexity": "moderate",
+                "board_pressure": "balanced",
+                "time_allocation": "standard",
+                "hints_available": False
+            },
+            "hard": {
+                "question_complexity": "challenging",
+                "board_pressure": "demanding",
+                "time_allocation": "tight",
+                "hints_available": False
+            }
+        },
+        "round_type_settings": {
+            "business": {
+                "description": "Focus on company-specific challenges and decisions",
+                "uses_company_data": True,
+                "uses_module_data": False
+            },
+            "module": {
+                "description": "Focus on applying theoretical concepts from the module",
+                "uses_company_data": False,
+                "uses_module_data": True
+            },
+            "both": {
+                "description": "Integrate theoretical concepts with company challenges",
+                "uses_company_data": True,
+                "uses_module_data": True
+            }
+        }
+    }
+
+
+def save_extracted_data(company_data: Dict, module_data: Dict, session_name: str, simulation_config: Dict = None) -> str:
     """Save extracted data to JSON file for persistence"""
     ensure_data_dir()
 
@@ -180,11 +239,16 @@ def save_extracted_data(company_data: Dict, module_data: Dict, session_name: str
     filename = f"{safe_session_name}_{timestamp}.json"
     filepath = os.path.join(DATA_DIR, filename)
 
+    # Use provided config or default
+    if simulation_config is None:
+        simulation_config = get_default_simulation_config()
+
     data = {
         "session_name": session_name,
         "created_at": datetime.now().isoformat(),
         "company_data": company_data,
         "module_data": module_data,
+        "simulation_config": simulation_config,
         "status": "ready_for_simulation"
     }
 
@@ -257,7 +321,7 @@ def main():
         st.session_state.extraction_complete = False
 
     # Tabs for different sections
-    tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload & Extract", "💾 Saved Sessions", "🔍 Audit Data", "ℹ️ Help"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Upload & Extract", "💾 Saved Sessions", "🔍 Audit Data", "🎮 Simulation Planning", "ℹ️ Help"])
 
     with tab1:
         st.header("Step 1: Upload PDF Documents")
@@ -1518,6 +1582,421 @@ def main():
                 )
 
     with tab4:
+        st.header("🎮 Simulation Planning")
+        st.markdown("Configure how the simulation will flow: number of rounds, difficulty progression, and content focus.")
+
+        # Initialize simulation config in session state
+        if 'simulation_config' not in st.session_state:
+            st.session_state.simulation_config = get_default_simulation_config()
+
+        # ============ LOAD SESSION FOR PLANNING ============
+        st.subheader("📂 Select Session to Configure")
+        sessions = list_saved_sessions()
+
+        if not sessions:
+            st.warning("No saved sessions found. Please extract and save data first in the 'Upload & Extract' tab.")
+        else:
+            session_options = {s['session_name']: s['filepath'] for s in sessions}
+            selected_planning_session = st.selectbox(
+                "Choose a session to configure simulation",
+                options=list(session_options.keys()),
+                key="planning_session_select"
+            )
+
+            if st.button("🔄 Load Session Config", type="primary", key="load_planning_session"):
+                filepath = session_options[selected_planning_session]
+                data = load_extracted_data(filepath)
+                if data:
+                    # Load existing config or use default
+                    if 'simulation_config' in data and data['simulation_config']:
+                        st.session_state.simulation_config = data['simulation_config']
+                    else:
+                        st.session_state.simulation_config = get_default_simulation_config()
+                    st.session_state.planning_loaded_file = filepath
+                    st.session_state.planning_session_data = data
+                    st.success("Session loaded! Configure the simulation below.")
+                    st.rerun()
+
+            st.divider()
+
+            # Only show config if a session is loaded
+            if 'planning_session_data' in st.session_state and st.session_state.planning_session_data:
+                config = st.session_state.simulation_config
+
+                # ============ SECTION 1: NUMBER OF ROUNDS ============
+                st.subheader("1️⃣ Number of Rounds")
+                st.markdown("Set how many rounds the simulation will have.")
+
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    total_rounds = st.number_input(
+                        "Total Rounds",
+                        min_value=1,
+                        max_value=20,
+                        value=config.get('total_rounds', 5),
+                        key="total_rounds_input",
+                        help="Number of decision rounds in the simulation"
+                    )
+
+                    if total_rounds != config.get('total_rounds'):
+                        # Update total rounds and adjust rounds list
+                        st.session_state.simulation_config['total_rounds'] = total_rounds
+                        current_rounds = len(config.get('rounds', []))
+
+                        if total_rounds > current_rounds:
+                            # Add new rounds
+                            for i in range(current_rounds, total_rounds):
+                                st.session_state.simulation_config['rounds'].append({
+                                    "round_number": i + 1,
+                                    "round_type": "both",
+                                    "difficulty": "medium",
+                                    "focus_area": None,
+                                    "time_pressure": "normal"
+                                })
+                        elif total_rounds < current_rounds:
+                            # Remove excess rounds
+                            st.session_state.simulation_config['rounds'] = config['rounds'][:total_rounds]
+
+                with col2:
+                    st.info(f"📊 The simulation will have **{total_rounds} rounds** of board decisions.")
+
+                st.divider()
+
+                # ============ SECTION 2: INITIAL SETUP (Deterministic Start) ============
+                st.subheader("2️⃣ Initial Setup (Deterministic Start)")
+                st.markdown("Configure the starting conditions for a consistent simulation experience.")
+
+                initial_setup = config.get('initial_setup', {})
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Starting scenario
+                    scenario_options = {
+                        "default": "Default - Standard business conditions",
+                        "crisis": "Crisis - Company facing immediate challenges",
+                        "growth": "Growth - Expansion opportunities available",
+                        "stable": "Stable - Steady state operations",
+                        "custom": "Custom - Define your own scenario"
+                    }
+
+                    # Check if current scenario is custom (not in predefined options except 'custom')
+                    current_scenario = initial_setup.get('starting_scenario', 'default')
+                    is_custom_scenario = current_scenario not in ['default', 'crisis', 'growth', 'stable'] or current_scenario == 'custom'
+
+                    if is_custom_scenario and current_scenario != 'custom':
+                        scenario_idx = list(scenario_options.keys()).index('custom')
+                    else:
+                        scenario_idx = list(scenario_options.keys()).index(current_scenario) if current_scenario in scenario_options else 0
+
+                    starting_scenario = st.selectbox(
+                        "Starting Scenario",
+                        options=list(scenario_options.keys()),
+                        format_func=lambda x: scenario_options[x],
+                        index=scenario_idx,
+                        key="starting_scenario_select"
+                    )
+
+                    # Show custom input field if "custom" is selected
+                    if starting_scenario == "custom":
+                        custom_scenario = st.text_area(
+                            "Custom Scenario Description",
+                            value=initial_setup.get('custom_scenario_text', '') if initial_setup.get('starting_scenario') == 'custom' or is_custom_scenario else '',
+                            key="custom_scenario_input",
+                            placeholder="Describe the starting scenario for the simulation...",
+                            height=100
+                        )
+                        st.session_state.simulation_config['initial_setup']['starting_scenario'] = 'custom'
+                        st.session_state.simulation_config['initial_setup']['custom_scenario_text'] = custom_scenario
+                    else:
+                        st.session_state.simulation_config['initial_setup']['starting_scenario'] = starting_scenario
+                        # Clear custom text if not using custom
+                        if 'custom_scenario_text' in st.session_state.simulation_config['initial_setup']:
+                            st.session_state.simulation_config['initial_setup']['custom_scenario_text'] = ''
+
+                with col2:
+                    # Initial difficulty
+                    difficulty_options = ["easy", "medium", "hard"]
+                    initial_difficulty = st.selectbox(
+                        "Initial Difficulty",
+                        options=difficulty_options,
+                        index=difficulty_options.index(initial_setup.get('initial_difficulty', 'medium')),
+                        key="initial_difficulty_select"
+                    )
+                    st.session_state.simulation_config['initial_setup']['initial_difficulty'] = initial_difficulty
+
+                # Display what this means
+                with st.expander("ℹ️ What do these settings mean?"):
+                    st.markdown("""
+                    - **Starting Scenario**: Sets the narrative context for the simulation:
+                      - *Default*: Balanced starting point with mixed challenges and opportunities
+                      - *Crisis*: Urgent problems require immediate attention
+                      - *Growth*: Focus on expansion and investment decisions
+                      - *Stable*: Maintenance and optimization focus
+                      - *Custom*: Define your own unique starting scenario
+                    - **Initial Difficulty**: Sets the baseline challenge level for the first round
+                    """)
+
+                st.divider()
+
+                # ============ SECTION 3: ROUND TYPE CONFIGURATION ============
+                st.subheader("3️⃣ Round Type Configuration")
+                st.markdown("Define whether each round focuses on **Business** challenges, **Module** concepts, or **Both**.")
+
+                # Quick setup options
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    if st.button("Set All: Business", key="set_all_business"):
+                        for r in st.session_state.simulation_config['rounds']:
+                            r['round_type'] = 'business'
+                        st.rerun()
+                with col2:
+                    if st.button("Set All: Module", key="set_all_module"):
+                        for r in st.session_state.simulation_config['rounds']:
+                            r['round_type'] = 'module'
+                        st.rerun()
+                with col3:
+                    if st.button("Set All: Both", key="set_all_both"):
+                        for r in st.session_state.simulation_config['rounds']:
+                            r['round_type'] = 'both'
+                        st.rerun()
+                with col4:
+                    if st.button("Alternate Pattern", key="set_alternate"):
+                        types = ['business', 'module', 'both']
+                        for i, r in enumerate(st.session_state.simulation_config['rounds']):
+                            r['round_type'] = types[i % 3]
+                        st.rerun()
+
+                # Round type explanations
+                type_info = config.get('round_type_settings', {})
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown("**🏢 Business**")
+                    st.caption(type_info.get('business', {}).get('description', 'Focus on company challenges'))
+                with col2:
+                    st.markdown("**📚 Module**")
+                    st.caption(type_info.get('module', {}).get('description', 'Focus on theoretical concepts'))
+                with col3:
+                    st.markdown("**🔄 Both**")
+                    st.caption(type_info.get('both', {}).get('description', 'Integrate theory with practice'))
+
+                st.divider()
+
+                # ============ SECTION 4: DIFFICULTY CONFIGURATION ============
+                st.subheader("4️⃣ Difficulty Configuration")
+                st.markdown("Set the difficulty level for each round: **Easy**, **Medium**, or **Hard**.")
+
+                # Quick difficulty patterns
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    if st.button("Set All: Easy", key="set_all_easy"):
+                        for r in st.session_state.simulation_config['rounds']:
+                            r['difficulty'] = 'easy'
+                        st.rerun()
+                with col2:
+                    if st.button("Set All: Medium", key="set_all_medium"):
+                        for r in st.session_state.simulation_config['rounds']:
+                            r['difficulty'] = 'medium'
+                        st.rerun()
+                with col3:
+                    if st.button("Set All: Hard", key="set_all_hard"):
+                        for r in st.session_state.simulation_config['rounds']:
+                            r['difficulty'] = 'hard'
+                        st.rerun()
+                with col4:
+                    if st.button("Progressive (Easy→Hard)", key="set_progressive"):
+                        rounds = st.session_state.simulation_config['rounds']
+                        n = len(rounds)
+                        for i, r in enumerate(rounds):
+                            if i < n // 3:
+                                r['difficulty'] = 'easy'
+                            elif i < 2 * n // 3:
+                                r['difficulty'] = 'medium'
+                            else:
+                                r['difficulty'] = 'hard'
+                        st.rerun()
+
+                # Difficulty explanations
+                diff_settings = config.get('difficulty_settings', {})
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown("**🟢 Easy**")
+                    easy = diff_settings.get('easy', {})
+                    st.caption(f"Questions: {easy.get('question_complexity', 'straightforward')}")
+                    st.caption(f"Board: {easy.get('board_pressure', 'supportive')}")
+                    st.caption(f"Hints: {'Yes' if easy.get('hints_available') else 'No'}")
+                with col2:
+                    st.markdown("**🟡 Medium**")
+                    medium = diff_settings.get('medium', {})
+                    st.caption(f"Questions: {medium.get('question_complexity', 'moderate')}")
+                    st.caption(f"Board: {medium.get('board_pressure', 'balanced')}")
+                    st.caption(f"Hints: {'Yes' if medium.get('hints_available') else 'No'}")
+                with col3:
+                    st.markdown("**🔴 Hard**")
+                    hard = diff_settings.get('hard', {})
+                    st.caption(f"Questions: {hard.get('question_complexity', 'challenging')}")
+                    st.caption(f"Board: {hard.get('board_pressure', 'demanding')}")
+                    st.caption(f"Hints: {'Yes' if hard.get('hints_available') else 'No'}")
+
+                st.divider()
+
+                # ============ DETAILED ROUND CONFIGURATION ============
+                st.subheader("📋 Detailed Round Configuration")
+                st.markdown("Fine-tune each individual round.")
+
+                rounds = st.session_state.simulation_config.get('rounds', [])
+
+                # Get available focus areas from loaded data
+                company_problems = st.session_state.planning_session_data.get('company_data', {}).get('current_problems', [])
+                module_topics = [t.get('name', '') for t in st.session_state.planning_session_data.get('module_data', {}).get('topics', [])]
+                focus_options = ["None (Auto-select)", "Custom (Enter below)"] + company_problems[:5] + module_topics[:5]
+
+                for i, round_config in enumerate(rounds):
+                    with st.expander(f"Round {i + 1}", expanded=(i < 3)):
+                        col1, col2, col3, col4 = st.columns(4)
+
+                        with col1:
+                            round_type = st.selectbox(
+                                "Type",
+                                options=["business", "module", "both"],
+                                index=["business", "module", "both"].index(round_config.get('round_type', 'both')),
+                                key=f"round_type_{i}"
+                            )
+                            if round_type != round_config.get('round_type'):
+                                st.session_state.simulation_config['rounds'][i]['round_type'] = round_type
+
+                        with col2:
+                            difficulty = st.selectbox(
+                                "Difficulty",
+                                options=["easy", "medium", "hard"],
+                                index=["easy", "medium", "hard"].index(round_config.get('difficulty', 'medium')),
+                                key=f"round_difficulty_{i}"
+                            )
+                            if difficulty != round_config.get('difficulty'):
+                                st.session_state.simulation_config['rounds'][i]['difficulty'] = difficulty
+
+                        with col3:
+                            time_pressure = st.selectbox(
+                                "Time Pressure",
+                                options=["relaxed", "normal", "urgent"],
+                                index=["relaxed", "normal", "urgent"].index(round_config.get('time_pressure', 'normal')),
+                                key=f"round_time_{i}"
+                            )
+                            if time_pressure != round_config.get('time_pressure'):
+                                st.session_state.simulation_config['rounds'][i]['time_pressure'] = time_pressure
+
+                        with col4:
+                            current_focus = round_config.get('focus_area') or "None (Auto-select)"
+                            # Check if current focus is a custom value (not in predefined options)
+                            is_custom = current_focus not in focus_options and current_focus != "None (Auto-select)"
+                            if is_custom:
+                                focus_idx = 1  # "Custom (Enter below)"
+                            else:
+                                focus_idx = focus_options.index(current_focus) if current_focus in focus_options else 0
+
+                            focus_area = st.selectbox(
+                                "Focus Area",
+                                options=focus_options,
+                                index=focus_idx,
+                                key=f"round_focus_{i}"
+                            )
+
+                        # Show custom input field if "Custom" is selected
+                        if focus_area == "Custom (Enter below)":
+                            custom_focus = st.text_input(
+                                "Custom Focus Area",
+                                value=round_config.get('focus_area', '') if round_config.get('focus_area') not in focus_options else '',
+                                key=f"round_custom_focus_{i}",
+                                placeholder="Enter your custom focus area..."
+                            )
+                            if custom_focus:
+                                if custom_focus != round_config.get('focus_area'):
+                                    st.session_state.simulation_config['rounds'][i]['focus_area'] = custom_focus
+                            else:
+                                # If custom is selected but empty, set to None
+                                if round_config.get('focus_area') is not None:
+                                    st.session_state.simulation_config['rounds'][i]['focus_area'] = None
+                        else:
+                            new_focus = None if focus_area == "None (Auto-select)" else focus_area
+                            if new_focus != round_config.get('focus_area'):
+                                st.session_state.simulation_config['rounds'][i]['focus_area'] = new_focus
+
+                st.divider()
+
+                # ============ VISUAL SUMMARY ============
+                st.subheader("📊 Configuration Summary")
+
+                # Create visual summary
+                summary_data = []
+                for i, r in enumerate(st.session_state.simulation_config.get('rounds', [])):
+                    type_emoji = {"business": "🏢", "module": "📚", "both": "🔄"}.get(r.get('round_type', 'both'), "🔄")
+                    diff_emoji = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}.get(r.get('difficulty', 'medium'), "🟡")
+                    time_emoji = {"relaxed": "🐢", "normal": "⏱️", "urgent": "⚡"}.get(r.get('time_pressure', 'normal'), "⏱️")
+
+                    summary_data.append({
+                        "Round": i + 1,
+                        "Type": f"{type_emoji} {r.get('round_type', 'both').title()}",
+                        "Difficulty": f"{diff_emoji} {r.get('difficulty', 'medium').title()}",
+                        "Time": f"{time_emoji} {r.get('time_pressure', 'normal').title()}",
+                        "Focus": r.get('focus_area', 'Auto')[:20] + '...' if r.get('focus_area') and len(r.get('focus_area', '')) > 20 else (r.get('focus_area') or 'Auto')
+                    })
+
+                # Display as a simple table
+                col_headers = st.columns(5)
+                col_headers[0].markdown("**Round**")
+                col_headers[1].markdown("**Type**")
+                col_headers[2].markdown("**Difficulty**")
+                col_headers[3].markdown("**Time**")
+                col_headers[4].markdown("**Focus**")
+
+                for row in summary_data:
+                    cols = st.columns(5)
+                    cols[0].write(row["Round"])
+                    cols[1].write(row["Type"])
+                    cols[2].write(row["Difficulty"])
+                    cols[3].write(row["Time"])
+                    cols[4].write(row["Focus"])
+
+                st.divider()
+
+                # ============ SAVE CONFIGURATION ============
+                st.subheader("💾 Save Configuration")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    if st.button("💾 Save to Current Session", type="primary", key="save_planning_config"):
+                        if 'planning_loaded_file' in st.session_state:
+                            # Load current data
+                            data = load_extracted_data(st.session_state.planning_loaded_file)
+                            if data:
+                                # Update with new config
+                                data['simulation_config'] = st.session_state.simulation_config
+                                data['modified_at'] = datetime.now().isoformat()
+
+                                # Save back
+                                with open(st.session_state.planning_loaded_file, 'w', encoding='utf-8') as f:
+                                    json.dump(data, f, indent=2, ensure_ascii=False)
+
+                                st.success("Configuration saved successfully!")
+                                st.balloons()
+
+                with col2:
+                    # Export config as JSON
+                    config_json = json.dumps(st.session_state.simulation_config, indent=2, ensure_ascii=False)
+                    st.download_button(
+                        label="⬇️ Export Config JSON",
+                        data=config_json,
+                        file_name=f"simulation_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json",
+                        key="download_config_json"
+                    )
+
+                # Show raw JSON
+                with st.expander("👁️ View Configuration JSON"):
+                    st.code(json.dumps(st.session_state.simulation_config, indent=2), language="json")
+
+    with tab5:
         st.header("ℹ️ How to Use")
 
         st.markdown("""
@@ -1542,7 +2021,30 @@ def main():
         2. **Extract Data**: Click the extract buttons to process each PDF with AI
         3. **Review**: Check the extracted data preview to ensure accuracy
         4. **Audit**: Use the Audit Data tab to check, edit, add, or remove information
-        5. **Save**: Give your session a name and save for later simulation
+        5. **Plan Simulation**: Configure rounds, difficulty, and content focus
+        6. **Save**: Give your session a name and save for later simulation
+
+        ### Simulation Planning
+
+        The **Simulation Planning** tab allows you to configure:
+
+        **1. Number of Rounds**
+        - Set how many decision rounds the simulation will have (1-20)
+
+        **2. Initial Setup (Deterministic Start)**
+        - **Fixed Seed**: Enable reproducible simulations for fair comparisons
+        - **Starting Scenario**: Choose the narrative context (Default, Crisis, Growth, Stable)
+        - **Initial Difficulty**: Set the baseline challenge level
+
+        **3. Round Types**
+        - **Business**: Focus on company-specific challenges
+        - **Module**: Focus on applying theoretical concepts
+        - **Both**: Integrate theory with company challenges
+
+        **4. Difficulty Levels**
+        - **Easy**: Supportive board, straightforward questions, hints available
+        - **Medium**: Balanced challenge, standard time allocation
+        - **Hard**: Demanding board, complex questions, tight deadlines
 
         ### Audit Features
 
@@ -1572,12 +2074,14 @@ def main():
         - You can re-extract if the initial results aren't satisfactory
         - Saved sessions can be loaded later without re-uploading
         - Always audit extracted data before running simulations
+        - Use progressive difficulty (Easy→Hard) for learning scenarios
 
         ### Technical Notes
 
         - Data is saved as JSON files in the `extracted_data/` folder
         - The simulation app can load these files directly
         - API key for Gemini is required in `.streamlit/secrets.toml`
+        - Simulation config is stored within the session JSON file
         """)
 
 if __name__ == "__main__":
