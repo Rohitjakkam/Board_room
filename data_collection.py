@@ -4,13 +4,50 @@ import json
 import PyPDF2
 import os
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
+import hashlib
 
 # Configure Gemini
 genai.configure(api_key=st.secrets.get("GEMINI_API_KEY", ""))
 
 # Data storage directory
 DATA_DIR = "extracted_data"
+
+
+def safe_index(options: List[str], value: str, default: int = 0) -> int:
+    """Safely get index of value in options list, returning default if not found."""
+    try:
+        return options.index(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_key(prefix: str, value: str) -> str:
+    """Generate a safe Streamlit widget key from potentially problematic strings."""
+    # Create a hash for strings with special characters
+    safe_value = hashlib.md5(str(value).encode()).hexdigest()[:8]
+    return f"{prefix}_{safe_value}"
+
+
+def ensure_dict(data: Optional[Dict], default_keys: List[str] = None) -> Dict:
+    """Ensure data is a dict with required keys initialized."""
+    if data is None:
+        data = {}
+    if default_keys:
+        for key in default_keys:
+            if key not in data:
+                data[key] = {} if key.endswith('_data') or key == 'metrics' or key == 'key_terms' else []
+    return data
+
+
+def ensure_list(data) -> List:
+    """Ensure data is a list."""
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return data
+    return []
+
 
 def ensure_data_dir():
     """Ensure the data directory exists"""
@@ -235,7 +272,13 @@ def save_extracted_data(company_data: Dict, module_data: Dict, session_name: str
     ensure_data_dir()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Handle empty or whitespace-only session names
+    if not session_name or not session_name.strip():
+        session_name = f"Session_{timestamp}"
     safe_session_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_name)
+    # Ensure we have at least something for the filename
+    if not safe_session_name:
+        safe_session_name = "session"
     filename = f"{safe_session_name}_{timestamp}.json"
     filepath = os.path.join(DATA_DIR, filename)
 
@@ -270,22 +313,40 @@ def list_saved_sessions() -> list:
     """List all saved session files"""
     ensure_data_dir()
     sessions = []
+    corrupted_files = []
     for filename in os.listdir(DATA_DIR):
         if filename.endswith('.json'):
             filepath = os.path.join(DATA_DIR, filename)
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    # Ensure nested dicts exist
+                    company_data = data.get("company_data") or {}
+                    module_data = data.get("module_data") or {}
+
+                    # Use filepath as unique identifier to avoid duplicate session name issues
+                    session_name = data.get("session_name", "Unknown")
+                    created_at = data.get("created_at", "Unknown")
+
                     sessions.append({
                         "filename": filename,
                         "filepath": filepath,
-                        "session_name": data.get("session_name", "Unknown"),
-                        "created_at": data.get("created_at", "Unknown"),
-                        "company_name": data.get("company_data", {}).get("company_name", "Unknown"),
-                        "module_name": data.get("module_data", {}).get("module_name", "Unknown")
+                        "session_name": session_name,
+                        "created_at": created_at,
+                        "company_name": company_data.get("company_name", "Unknown"),
+                        "module_name": module_data.get("module_name", "Unknown"),
+                        "display_name": f"{session_name} ({filename})"  # Unique display name
                     })
-            except:
+            except json.JSONDecodeError:
+                corrupted_files.append(filename)
                 continue
+            except Exception:
+                continue
+
+    # Warn about corrupted files (will be shown in UI if needed)
+    if corrupted_files:
+        st.session_state._corrupted_session_files = corrupted_files
+
     return sorted(sessions, key=lambda x: x.get("created_at", ""), reverse=True)
 
 def delete_session(filepath: str) -> bool:
@@ -485,6 +546,14 @@ def main():
 
         sessions = list_saved_sessions()
 
+        # Show warning for corrupted files if any
+        if hasattr(st.session_state, '_corrupted_session_files') and st.session_state._corrupted_session_files:
+            with st.expander("⚠️ Corrupted Files Detected", expanded=False):
+                st.warning(f"The following session files could not be loaded (corrupted JSON):")
+                for f in st.session_state._corrupted_session_files:
+                    st.write(f"- `{f}`")
+                st.info("You may want to delete these files from the `extracted_data/` folder.")
+
         if sessions:
             for session in sessions:
                 with st.expander(f"📁 {session['session_name']}", expanded=False):
@@ -533,7 +602,8 @@ def main():
         if not sessions:
             st.warning("No saved sessions found. Please extract and save data first.")
         else:
-            session_options = {s['session_name']: s['filepath'] for s in sessions}
+            # Use display_name (unique) as key to avoid duplicate issues
+            session_options = {s['display_name']: s['filepath'] for s in sessions}
             selected_session = st.selectbox(
                 "Choose a session to audit",
                 options=list(session_options.keys()),
@@ -546,6 +616,24 @@ def main():
                     filepath = session_options[selected_session]
                     data = load_extracted_data(filepath)
                     if data:
+                        # Ensure data structure integrity
+                        if 'company_data' not in data or data['company_data'] is None:
+                            data['company_data'] = {}
+                        if 'module_data' not in data or data['module_data'] is None:
+                            data['module_data'] = {}
+
+                        # Ensure required keys exist in company_data
+                        company_defaults = ['metrics', 'board_members', 'current_problems', 'committees']
+                        for key in company_defaults:
+                            if key not in data['company_data'] or data['company_data'][key] is None:
+                                data['company_data'][key] = {} if key == 'metrics' else []
+
+                        # Ensure required keys exist in module_data
+                        module_defaults = ['topics', 'frameworks', 'learning_objectives', 'assessment_criteria', 'key_terms']
+                        for key in module_defaults:
+                            if key not in data['module_data'] or data['module_data'][key] is None:
+                                data['module_data'][key] = {} if key == 'key_terms' else []
+
                         st.session_state.audit_data = data
                         st.session_state.audit_loaded_file = filepath
                         st.session_state.audit_modified = False
@@ -558,6 +646,9 @@ def main():
 
         if st.session_state.audit_data:
             st.divider()
+
+            # Note about session sync
+            st.info("💡 Changes made here are independent of the Simulation Planning tab. Remember to save your changes before switching tabs.")
 
             # Audit sub-tabs
             audit_tab1, audit_tab2 = st.tabs(["🏢 Company Data", "📚 Module Data"])
@@ -645,13 +736,15 @@ def main():
                     for metric_key, metric_info in metrics.items():
                         st.markdown(f"**{metric_key}**")
                         col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 0.5])
+                        # Use safe key to handle special characters in metric names
+                        metric_safe_key = safe_key("metric", metric_key)
 
                         if isinstance(metric_info, dict):
                             with col1:
                                 new_val = st.number_input(
                                     "Value",
-                                    value=float(metric_info.get('value', 0)),
-                                    key=f"metric_val_{metric_key}",
+                                    value=float(metric_info.get('value', 0) or 0),
+                                    key=f"val_{metric_safe_key}",
                                     label_visibility="collapsed"
                                 )
                                 if new_val != metric_info.get('value'):
@@ -661,8 +754,8 @@ def main():
                             with col2:
                                 new_unit = st.text_input(
                                     "Unit",
-                                    value=metric_info.get('unit', ''),
-                                    key=f"metric_unit_{metric_key}",
+                                    value=metric_info.get('unit', '') or '',
+                                    key=f"unit_{metric_safe_key}",
                                     label_visibility="collapsed"
                                 )
                                 if new_unit != metric_info.get('unit'):
@@ -672,8 +765,8 @@ def main():
                             with col3:
                                 new_desc = st.text_input(
                                     "Description",
-                                    value=metric_info.get('description', ''),
-                                    key=f"metric_desc_{metric_key}",
+                                    value=metric_info.get('description', '') or '',
+                                    key=f"desc_{metric_safe_key}",
                                     label_visibility="collapsed"
                                 )
                                 if new_desc != metric_info.get('description'):
@@ -682,12 +775,12 @@ def main():
 
                             with col4:
                                 current_priority = metric_info.get('priority', 'General')
-                                priority_idx = priority_options.index(current_priority) if current_priority in priority_options else 0
+                                priority_idx = safe_index(priority_options, current_priority, 0)
                                 new_priority = st.selectbox(
                                     "Priority",
                                     options=priority_options,
                                     index=priority_idx,
-                                    key=f"metric_priority_{metric_key}",
+                                    key=f"priority_{metric_safe_key}",
                                     label_visibility="collapsed"
                                 )
                                 if new_priority != current_priority:
@@ -695,7 +788,14 @@ def main():
                                     st.session_state.audit_modified = True
 
                             with col5:
-                                if st.button("🗑️", key=f"del_metric_{metric_key}", help="Remove this metric"):
+                                if st.button("🗑️", key=f"del_{metric_safe_key}", help="Remove this metric"):
+                                    metrics_to_remove.append(metric_key)
+                        else:
+                            # Handle non-dict metric values (legacy data)
+                            with col1:
+                                st.write(str(metric_info))
+                            with col5:
+                                if st.button("🗑️", key=f"del_{metric_safe_key}", help="Remove this metric"):
                                     metrics_to_remove.append(metric_key)
 
                         st.markdown("---")
@@ -809,7 +909,7 @@ def main():
 
                         with col3:
                             current_type = member.get('director_type', 'Independent Director')
-                            type_index = director_types.index(current_type) if current_type in director_types else 0
+                            type_index = safe_index(director_types, current_type, 0)
                             new_type = st.selectbox(
                                 "Director Type",
                                 options=director_types,
@@ -972,10 +1072,12 @@ def main():
                                     st.session_state.audit_modified = True
 
                             with col2:
+                                current_committee_type = committee.get('type', 'Custom')
+                                committee_type_index = safe_index(committee_types, current_committee_type, safe_index(committee_types, 'Custom', 0))
                                 edited_type = st.selectbox(
                                     "Type",
                                     options=committee_types,
-                                    index=committee_types.index(committee.get('type', 'Custom')) if committee.get('type', 'Custom') in committee_types else committee_types.index('Custom'),
+                                    index=committee_type_index,
                                     key=f"committee_type_{i}"
                                 )
                                 if edited_type != committee.get('type'):
@@ -1290,13 +1392,15 @@ def main():
                     terms_to_remove = []
                     for term, definition in terms.items():
                         col1, col2 = st.columns([10, 1])
+                        # Use safe key to handle special characters in term names
+                        term_safe_key = safe_key("term", term)
 
                         with col1:
                             st.markdown(f"**{term}**")
                             new_def = st.text_area(
                                 "Definition",
-                                value=definition,
-                                key=f"term_def_{term}",
+                                value=definition or '',
+                                key=f"def_{term_safe_key}",
                                 height=60,
                                 label_visibility="collapsed"
                             )
@@ -1305,7 +1409,7 @@ def main():
                                 st.session_state.audit_modified = True
 
                         with col2:
-                            if st.button("🗑️", key=f"del_term_{term}"):
+                            if st.button("🗑️", key=f"del_{term_safe_key}"):
                                 terms_to_remove.append(term)
 
                         st.markdown("---")
@@ -1596,7 +1700,8 @@ def main():
         if not sessions:
             st.warning("No saved sessions found. Please extract and save data first in the 'Upload & Extract' tab.")
         else:
-            session_options = {s['session_name']: s['filepath'] for s in sessions}
+            # Use display_name (unique) as key to avoid duplicate issues
+            session_options = {s['display_name']: s['filepath'] for s in sessions}
             selected_planning_session = st.selectbox(
                 "Choose a session to configure simulation",
                 options=list(session_options.keys()),
@@ -1609,9 +1714,53 @@ def main():
                 if data:
                     # Load existing config or use default
                     if 'simulation_config' in data and data['simulation_config']:
-                        st.session_state.simulation_config = data['simulation_config']
+                        loaded_config = data['simulation_config']
+                        default_config = get_default_simulation_config()
+
+                        # Ensure backward compatibility - merge with defaults
+                        # Ensure initial_setup exists with all required keys
+                        if 'initial_setup' not in loaded_config or loaded_config['initial_setup'] is None:
+                            loaded_config['initial_setup'] = default_config['initial_setup']
+                        else:
+                            # Ensure all keys exist in initial_setup
+                            for key, value in default_config['initial_setup'].items():
+                                if key not in loaded_config['initial_setup']:
+                                    loaded_config['initial_setup'][key] = value
+
+                        # Ensure rounds list exists
+                        if 'rounds' not in loaded_config or loaded_config['rounds'] is None:
+                            loaded_config['rounds'] = default_config['rounds']
+                        else:
+                            # Ensure each round has all required keys
+                            for i, round_cfg in enumerate(loaded_config['rounds']):
+                                if round_cfg is None:
+                                    loaded_config['rounds'][i] = default_config['rounds'][0].copy()
+                                    loaded_config['rounds'][i]['round_number'] = i + 1
+                                else:
+                                    for key in ['round_type', 'difficulty', 'focus_area', 'time_pressure']:
+                                        if key not in round_cfg:
+                                            round_cfg[key] = default_config['rounds'][0].get(key)
+
+                        # Ensure total_rounds matches rounds list length
+                        if 'total_rounds' not in loaded_config:
+                            loaded_config['total_rounds'] = len(loaded_config['rounds'])
+
+                        # Ensure difficulty_settings and round_type_settings exist
+                        if 'difficulty_settings' not in loaded_config:
+                            loaded_config['difficulty_settings'] = default_config['difficulty_settings']
+                        if 'round_type_settings' not in loaded_config:
+                            loaded_config['round_type_settings'] = default_config['round_type_settings']
+
+                        st.session_state.simulation_config = loaded_config
                     else:
                         st.session_state.simulation_config = get_default_simulation_config()
+
+                    # Ensure data structure for planning
+                    if 'company_data' not in data or data['company_data'] is None:
+                        data['company_data'] = {}
+                    if 'module_data' not in data or data['module_data'] is None:
+                        data['module_data'] = {}
+
                     st.session_state.planning_loaded_file = filepath
                     st.session_state.planning_session_data = data
                     st.success("Session loaded! Configure the simulation below.")
@@ -1716,11 +1865,11 @@ def main():
 
                 with col2:
                     # Initial difficulty
-                    difficulty_options = ["easy", "medium", "hard"]
+                    init_difficulty_options = ["easy", "medium", "hard"]
                     initial_difficulty = st.selectbox(
                         "Initial Difficulty",
-                        options=difficulty_options,
-                        index=difficulty_options.index(initial_setup.get('initial_difficulty', 'medium')),
+                        options=init_difficulty_options,
+                        index=safe_index(init_difficulty_options, initial_setup.get('initial_difficulty', 'medium'), 1),
                         key="initial_difficulty_select"
                     )
                     st.session_state.simulation_config['initial_setup']['initial_difficulty'] = initial_difficulty
@@ -1856,30 +2005,33 @@ def main():
                         col1, col2, col3, col4 = st.columns(4)
 
                         with col1:
+                            round_type_options = ["business", "module", "both"]
                             round_type = st.selectbox(
                                 "Type",
-                                options=["business", "module", "both"],
-                                index=["business", "module", "both"].index(round_config.get('round_type', 'both')),
+                                options=round_type_options,
+                                index=safe_index(round_type_options, round_config.get('round_type', 'both'), 2),
                                 key=f"round_type_{i}"
                             )
                             if round_type != round_config.get('round_type'):
                                 st.session_state.simulation_config['rounds'][i]['round_type'] = round_type
 
                         with col2:
+                            difficulty_options = ["easy", "medium", "hard"]
                             difficulty = st.selectbox(
                                 "Difficulty",
-                                options=["easy", "medium", "hard"],
-                                index=["easy", "medium", "hard"].index(round_config.get('difficulty', 'medium')),
+                                options=difficulty_options,
+                                index=safe_index(difficulty_options, round_config.get('difficulty', 'medium'), 1),
                                 key=f"round_difficulty_{i}"
                             )
                             if difficulty != round_config.get('difficulty'):
                                 st.session_state.simulation_config['rounds'][i]['difficulty'] = difficulty
 
                         with col3:
+                            time_pressure_options = ["relaxed", "normal", "urgent"]
                             time_pressure = st.selectbox(
                                 "Time Pressure",
-                                options=["relaxed", "normal", "urgent"],
-                                index=["relaxed", "normal", "urgent"].index(round_config.get('time_pressure', 'normal')),
+                                options=time_pressure_options,
+                                index=safe_index(time_pressure_options, round_config.get('time_pressure', 'normal'), 1),
                                 key=f"round_time_{i}"
                             )
                             if time_pressure != round_config.get('time_pressure'):
@@ -1933,12 +2085,21 @@ def main():
                     diff_emoji = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}.get(r.get('difficulty', 'medium'), "🟡")
                     time_emoji = {"relaxed": "🐢", "normal": "⏱️", "urgent": "⚡"}.get(r.get('time_pressure', 'normal'), "⏱️")
 
+                    # Safely handle focus area display
+                    focus_area_value = r.get('focus_area')
+                    if focus_area_value and len(str(focus_area_value)) > 20:
+                        focus_display = str(focus_area_value)[:20] + '...'
+                    elif focus_area_value:
+                        focus_display = str(focus_area_value)
+                    else:
+                        focus_display = 'Auto'
+
                     summary_data.append({
                         "Round": i + 1,
-                        "Type": f"{type_emoji} {r.get('round_type', 'both').title()}",
-                        "Difficulty": f"{diff_emoji} {r.get('difficulty', 'medium').title()}",
-                        "Time": f"{time_emoji} {r.get('time_pressure', 'normal').title()}",
-                        "Focus": r.get('focus_area', 'Auto')[:20] + '...' if r.get('focus_area') and len(r.get('focus_area', '')) > 20 else (r.get('focus_area') or 'Auto')
+                        "Type": f"{type_emoji} {(r.get('round_type') or 'both').title()}",
+                        "Difficulty": f"{diff_emoji} {(r.get('difficulty') or 'medium').title()}",
+                        "Time": f"{time_emoji} {(r.get('time_pressure') or 'normal').title()}",
+                        "Focus": focus_display
                     })
 
                 # Display as a simple table
@@ -1996,6 +2157,208 @@ def main():
                 with st.expander("👁️ View Configuration JSON"):
                     st.code(json.dumps(st.session_state.simulation_config, indent=2), language="json")
 
+                st.divider()
+
+                # ============ FINAL REVIEW & EXPORT ============
+                st.subheader("✅ Final Review & Export")
+                st.markdown("Review and download the complete simulation package with all data and configuration.")
+
+                # Load the latest saved data
+                if 'planning_loaded_file' in st.session_state:
+                    final_data = load_extracted_data(st.session_state.planning_loaded_file)
+                    if final_data:
+                        # Merge current simulation config with loaded data
+                        final_data['simulation_config'] = st.session_state.simulation_config
+                        final_data['export_timestamp'] = datetime.now().isoformat()
+                        final_data['status'] = 'ready_for_simulation'
+
+                        # ============ DATA SUMMARY ============
+                        st.markdown("#### 📊 Data Summary")
+
+                        col1, col2, col3 = st.columns(3)
+
+                        with col1:
+                            st.markdown("**🏢 Company Data**")
+                            company = final_data.get('company_data', {})
+                            st.write(f"• Company: {company.get('company_name', 'N/A')}")
+                            st.write(f"• Metrics: {len(company.get('metrics', {}))}")
+                            st.write(f"• Board Members: {len(company.get('board_members', []))}")
+                            st.write(f"• Committees: {len(company.get('committees', []))}")
+                            st.write(f"• Problems: {len(company.get('current_problems', []))}")
+
+                        with col2:
+                            st.markdown("**📚 Module Data**")
+                            module = final_data.get('module_data', {})
+                            st.write(f"• Module: {module.get('module_name', 'N/A')}")
+                            st.write(f"• Subject: {module.get('subject_area', 'N/A')}")
+                            st.write(f"• Topics: {len(module.get('topics', []))}")
+                            st.write(f"• Frameworks: {len(module.get('frameworks', []))}")
+                            st.write(f"• Key Terms: {len(module.get('key_terms', {}))}")
+
+                        with col3:
+                            st.markdown("**🎮 Simulation Config**")
+                            sim_config = final_data.get('simulation_config', {})
+                            st.write(f"• Total Rounds: {sim_config.get('total_rounds', 0)}")
+                            initial = sim_config.get('initial_setup', {})
+                            st.write(f"• Scenario: {initial.get('starting_scenario', 'N/A').title()}")
+                            st.write(f"• Initial Difficulty: {initial.get('initial_difficulty', 'N/A').title()}")
+
+                            # Count difficulty distribution
+                            rounds = sim_config.get('rounds', [])
+                            easy_count = sum(1 for r in rounds if r.get('difficulty') == 'easy')
+                            medium_count = sum(1 for r in rounds if r.get('difficulty') == 'medium')
+                            hard_count = sum(1 for r in rounds if r.get('difficulty') == 'hard')
+                            st.write(f"• Difficulty Mix: 🟢{easy_count} 🟡{medium_count} 🔴{hard_count}")
+
+                        st.divider()
+
+                        # ============ VALIDATION CHECKLIST ============
+                        st.markdown("#### ✔️ Validation Checklist")
+
+                        validation_issues = []
+                        validation_warnings = []
+
+                        # Check company data
+                        if not company.get('company_name'):
+                            validation_issues.append("Company name is missing")
+                        if len(company.get('metrics', {})) < 5:
+                            validation_warnings.append(f"Only {len(company.get('metrics', {}))} metrics - consider adding more for richer simulation")
+                        if len(company.get('board_members', [])) < 3:
+                            validation_warnings.append(f"Only {len(company.get('board_members', []))} board members - consider adding more")
+                        if len(company.get('current_problems', [])) < 2:
+                            validation_warnings.append(f"Only {len(company.get('current_problems', []))} problems defined")
+
+                        # Check module data
+                        if not module.get('module_name'):
+                            validation_issues.append("Module name is missing")
+                        if len(module.get('topics', [])) < 3:
+                            validation_warnings.append(f"Only {len(module.get('topics', []))} topics - consider adding more")
+                        if len(module.get('key_terms', {})) < 5:
+                            validation_warnings.append(f"Only {len(module.get('key_terms', {}))} key terms defined")
+
+                        # Check simulation config
+                        if sim_config.get('total_rounds', 0) < 1:
+                            validation_issues.append("No simulation rounds configured")
+                        if initial.get('starting_scenario') == 'custom' and not initial.get('custom_scenario_text', '').strip():
+                            validation_warnings.append("Custom scenario selected but no description provided")
+
+                        # Display validation results
+                        if validation_issues:
+                            st.error("**Issues Found (Must Fix):**")
+                            for issue in validation_issues:
+                                st.write(f"❌ {issue}")
+
+                        if validation_warnings:
+                            st.warning("**Warnings (Optional to Fix):**")
+                            for warning in validation_warnings:
+                                st.write(f"⚠️ {warning}")
+
+                        if not validation_issues and not validation_warnings:
+                            st.success("✅ All validations passed! Your simulation package is ready.")
+                        elif not validation_issues:
+                            st.info("✅ No critical issues. You can proceed with the export.")
+
+                        st.divider()
+
+                        # ============ FINAL CONFIRMATION & DOWNLOAD ============
+                        st.markdown("#### 📦 Export Complete Package")
+
+                        # Confirmation checkbox
+                        confirmed = st.checkbox(
+                            "I have reviewed the data and simulation configuration and confirm it is ready for export",
+                            key="final_confirmation_checkbox"
+                        )
+
+                        if confirmed:
+                            col1, col2, col3 = st.columns(3)
+
+                            # Prepare final export data
+                            export_data = {
+                                "session_name": final_data.get('session_name', 'Unnamed Session'),
+                                "created_at": final_data.get('created_at'),
+                                "modified_at": final_data.get('modified_at'),
+                                "export_timestamp": datetime.now().isoformat(),
+                                "status": "confirmed_ready",
+                                "company_data": final_data.get('company_data', {}),
+                                "module_data": final_data.get('module_data', {}),
+                                "simulation_config": st.session_state.simulation_config,
+                                "validation": {
+                                    "issues_count": len(validation_issues),
+                                    "warnings_count": len(validation_warnings),
+                                    "is_valid": len(validation_issues) == 0
+                                }
+                            }
+
+                            # Generate filename
+                            session_name = final_data.get('session_name', 'simulation')
+                            safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_name)
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+                            with col1:
+                                # Full package download (formatted JSON)
+                                full_json = json.dumps(export_data, indent=2, ensure_ascii=False)
+                                st.download_button(
+                                    label="📦 Download Full Package",
+                                    data=full_json,
+                                    file_name=f"{safe_name}_complete_{timestamp}.json",
+                                    mime="application/json",
+                                    type="primary",
+                                    key="download_full_package"
+                                )
+                                st.caption("Complete data + config (formatted)")
+
+                            with col2:
+                                # Minified version for production
+                                minified_json = json.dumps(export_data, ensure_ascii=False)
+                                st.download_button(
+                                    label="⚡ Download Minified",
+                                    data=minified_json,
+                                    file_name=f"{safe_name}_minified_{timestamp}.json",
+                                    mime="application/json",
+                                    key="download_minified_package"
+                                )
+                                st.caption("Smaller file size")
+
+                            with col3:
+                                # Save final version to file
+                                if st.button("💾 Save Final Version", key="save_final_version"):
+                                    # Update the source file with confirmed status
+                                    export_data['status'] = 'confirmed_ready'
+                                    with open(st.session_state.planning_loaded_file, 'w', encoding='utf-8') as f:
+                                        json.dump(export_data, f, indent=2, ensure_ascii=False)
+                                    st.success("Final version saved!")
+                                    st.balloons()
+                                st.caption("Save to current session file")
+
+                            st.divider()
+
+                            # Preview of export
+                            with st.expander("👁️ Preview Export Data", expanded=False):
+                                preview_tabs = st.tabs(["📋 Summary", "🏢 Company", "📚 Module", "🎮 Config"])
+
+                                with preview_tabs[0]:
+                                    st.json({
+                                        "session_name": export_data['session_name'],
+                                        "export_timestamp": export_data['export_timestamp'],
+                                        "status": export_data['status'],
+                                        "validation": export_data['validation']
+                                    })
+
+                                with preview_tabs[1]:
+                                    st.json(export_data['company_data'])
+
+                                with preview_tabs[2]:
+                                    st.json(export_data['module_data'])
+
+                                with preview_tabs[3]:
+                                    st.json(export_data['simulation_config'])
+
+                        else:
+                            st.info("👆 Check the confirmation box above to enable export options.")
+
+                else:
+                    st.warning("Please load a session first to access the final export.")
+
     with tab5:
         st.header("ℹ️ How to Use")
 
@@ -2032,8 +2395,8 @@ def main():
         - Set how many decision rounds the simulation will have (1-20)
 
         **2. Initial Setup (Deterministic Start)**
-        - **Fixed Seed**: Enable reproducible simulations for fair comparisons
-        - **Starting Scenario**: Choose the narrative context (Default, Crisis, Growth, Stable)
+        - **Starting Scenario**: Choose the narrative context (Default, Crisis, Growth, Stable, or Custom)
+        - **Custom Scenario**: Define your own unique starting scenario when "Custom" is selected
         - **Initial Difficulty**: Set the baseline challenge level
 
         **3. Round Types**
@@ -2045,6 +2408,17 @@ def main():
         - **Easy**: Supportive board, straightforward questions, hints available
         - **Medium**: Balanced challenge, standard time allocation
         - **Hard**: Demanding board, complex questions, tight deadlines
+
+        **5. Detailed Round Configuration**
+        - Configure each round individually with Type, Difficulty, Time Pressure, and Focus Area
+        - Use quick-set buttons to apply patterns (Progressive difficulty, Alternating types, etc.)
+        - Set custom focus areas for specific rounds
+
+        **6. Final Review & Export**
+        - Review complete data summary (Company, Module, Simulation Config)
+        - Validation checklist identifies issues and warnings
+        - Confirm and download the complete simulation package
+        - Export options: Full Package (formatted), Minified, or Save to file
 
         ### Audit Features
 
