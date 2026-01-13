@@ -1580,13 +1580,17 @@ def main():
                 with st.expander("👁️ View Full JSON", expanded=False):
                     st.code(full_json, language="json")
 
-                # Download buttons
-                col1, col2 = st.columns(2)
+                # Download buttons - use stable filenames to avoid MediaFileStorageError
+                # Initialize export data in session state if needed
+                if 'audit_export_timestamp' not in st.session_state:
+                    st.session_state.audit_export_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+                col1, col2, col3 = st.columns([2, 2, 1])
                 with col1:
                     st.download_button(
                         label="⬇️ Download Full JSON",
                         data=full_json,
-                        file_name=f"full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        file_name=f"full_export_{st.session_state.audit_export_timestamp}.json",
                         mime="application/json",
                         key="download_full_json"
                     )
@@ -1596,10 +1600,14 @@ def main():
                     st.download_button(
                         label="⬇️ Download Minified JSON",
                         data=minified_json,
-                        file_name=f"full_export_minified_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        file_name=f"full_export_minified_{st.session_state.audit_export_timestamp}.json",
                         mime="application/json",
                         key="download_full_minified"
                     )
+                with col3:
+                    if st.button("🔄", key="refresh_audit_export", help="Refresh export timestamp"):
+                        st.session_state.audit_export_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        st.rerun()
 
             with view_tab2:
                 st.markdown("**Company Data Only**")
@@ -1621,11 +1629,11 @@ def main():
                 with st.expander("👁️ View Company JSON", expanded=False):
                     st.code(company_json, language="json")
 
-                # Download
+                # Download - use stable timestamp from session state
                 st.download_button(
                     label="⬇️ Download Company JSON",
                     data=company_json,
-                    file_name=f"company_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    file_name=f"company_export_{st.session_state.audit_export_timestamp}.json",
                     mime="application/json",
                     key="download_company_json"
                 )
@@ -1650,11 +1658,11 @@ def main():
                 with st.expander("👁️ View Module JSON", expanded=False):
                     st.code(module_json, language="json")
 
-                # Download
+                # Download - use stable timestamp from session state
                 st.download_button(
                     label="⬇️ Download Module JSON",
                     data=module_json,
-                    file_name=f"module_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    file_name=f"module_export_{st.session_state.audit_export_timestamp}.json",
                     mime="application/json",
                     key="download_module_json"
                 )
@@ -2143,15 +2151,24 @@ def main():
                                 st.balloons()
 
                 with col2:
-                    # Export config as JSON
+                    # Export config as JSON - use stable filename
                     config_json = json.dumps(st.session_state.simulation_config, indent=2, ensure_ascii=False)
+                    # Store in session state for stable download
+                    if 'config_export_json' not in st.session_state or st.session_state.get('config_export_needs_update', True):
+                        st.session_state.config_export_json = config_json
+                        st.session_state.config_export_filename = f"simulation_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                        st.session_state.config_export_needs_update = False
+
                     st.download_button(
                         label="⬇️ Export Config JSON",
-                        data=config_json,
-                        file_name=f"simulation_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        data=st.session_state.config_export_json,
+                        file_name=st.session_state.config_export_filename,
                         mime="application/json",
                         key="download_config_json"
                     )
+                    if st.button("🔄 Refresh Export", key="refresh_config_export", help="Update the export with latest changes"):
+                        st.session_state.config_export_needs_update = True
+                        st.rerun()
 
                 # Show raw JSON
                 with st.expander("👁️ View Configuration JSON"):
@@ -2270,88 +2287,100 @@ def main():
                         )
 
                         if confirmed:
-                            col1, col2, col3 = st.columns(3)
+                            # Prepare export button
+                            if st.button("🔄 Prepare Export Package", key="prepare_export_package", type="secondary"):
+                                # Generate export data only when button is clicked
+                                session_name = final_data.get('session_name', 'simulation')
+                                safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_name)
+                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-                            # Prepare final export data
-                            export_data = {
-                                "session_name": final_data.get('session_name', 'Unnamed Session'),
-                                "created_at": final_data.get('created_at'),
-                                "modified_at": final_data.get('modified_at'),
-                                "export_timestamp": datetime.now().isoformat(),
-                                "status": "confirmed_ready",
-                                "company_data": final_data.get('company_data', {}),
-                                "module_data": final_data.get('module_data', {}),
-                                "simulation_config": st.session_state.simulation_config,
-                                "validation": {
-                                    "issues_count": len(validation_issues),
-                                    "warnings_count": len(validation_warnings),
-                                    "is_valid": len(validation_issues) == 0
+                                export_data = {
+                                    "session_name": final_data.get('session_name', 'Unnamed Session'),
+                                    "created_at": final_data.get('created_at'),
+                                    "modified_at": final_data.get('modified_at'),
+                                    "export_timestamp": datetime.now().isoformat(),
+                                    "status": "confirmed_ready",
+                                    "company_data": final_data.get('company_data', {}),
+                                    "module_data": final_data.get('module_data', {}),
+                                    "simulation_config": st.session_state.simulation_config,
+                                    "validation": {
+                                        "issues_count": len(validation_issues),
+                                        "warnings_count": len(validation_warnings),
+                                        "is_valid": len(validation_issues) == 0
+                                    }
                                 }
-                            }
 
-                            # Generate filename
-                            session_name = final_data.get('session_name', 'simulation')
-                            safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_name)
-                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                # Store in session state for stable downloads
+                                st.session_state.final_export_data = export_data
+                                st.session_state.final_export_full_json = json.dumps(export_data, indent=2, ensure_ascii=False)
+                                st.session_state.final_export_minified_json = json.dumps(export_data, ensure_ascii=False)
+                                st.session_state.final_export_filename_full = f"{safe_name}_complete_{timestamp}.json"
+                                st.session_state.final_export_filename_mini = f"{safe_name}_minified_{timestamp}.json"
+                                st.session_state.final_export_ready = True
+                                st.success("Export package prepared! Click the download buttons below.")
+                                st.rerun()
 
-                            with col1:
-                                # Full package download (formatted JSON)
-                                full_json = json.dumps(export_data, indent=2, ensure_ascii=False)
-                                st.download_button(
-                                    label="📦 Download Full Package",
-                                    data=full_json,
-                                    file_name=f"{safe_name}_complete_{timestamp}.json",
-                                    mime="application/json",
-                                    type="primary",
-                                    key="download_full_package"
-                                )
-                                st.caption("Complete data + config (formatted)")
+                            # Show download buttons only if export is prepared
+                            if st.session_state.get('final_export_ready', False):
+                                st.success("✅ Export package is ready for download!")
 
-                            with col2:
-                                # Minified version for production
-                                minified_json = json.dumps(export_data, ensure_ascii=False)
-                                st.download_button(
-                                    label="⚡ Download Minified",
-                                    data=minified_json,
-                                    file_name=f"{safe_name}_minified_{timestamp}.json",
-                                    mime="application/json",
-                                    key="download_minified_package"
-                                )
-                                st.caption("Smaller file size")
+                                col1, col2, col3 = st.columns(3)
 
-                            with col3:
-                                # Save final version to file
-                                if st.button("💾 Save Final Version", key="save_final_version"):
-                                    # Update the source file with confirmed status
-                                    export_data['status'] = 'confirmed_ready'
-                                    with open(st.session_state.planning_loaded_file, 'w', encoding='utf-8') as f:
-                                        json.dump(export_data, f, indent=2, ensure_ascii=False)
-                                    st.success("Final version saved!")
-                                    st.balloons()
-                                st.caption("Save to current session file")
+                                with col1:
+                                    st.download_button(
+                                        label="📦 Download Full Package",
+                                        data=st.session_state.final_export_full_json,
+                                        file_name=st.session_state.final_export_filename_full,
+                                        mime="application/json",
+                                        type="primary",
+                                        key="download_full_package"
+                                    )
+                                    st.caption("Complete data + config (formatted)")
 
-                            st.divider()
+                                with col2:
+                                    st.download_button(
+                                        label="⚡ Download Minified",
+                                        data=st.session_state.final_export_minified_json,
+                                        file_name=st.session_state.final_export_filename_mini,
+                                        mime="application/json",
+                                        key="download_minified_package"
+                                    )
+                                    st.caption("Smaller file size")
 
-                            # Preview of export
-                            with st.expander("👁️ Preview Export Data", expanded=False):
-                                preview_tabs = st.tabs(["📋 Summary", "🏢 Company", "📚 Module", "🎮 Config"])
+                                with col3:
+                                    if st.button("💾 Save Final Version", key="save_final_version"):
+                                        # Update the source file with confirmed status
+                                        with open(st.session_state.planning_loaded_file, 'w', encoding='utf-8') as f:
+                                            json.dump(st.session_state.final_export_data, f, indent=2, ensure_ascii=False)
+                                        st.success("Final version saved!")
+                                        st.balloons()
+                                    st.caption("Save to current session file")
 
-                                with preview_tabs[0]:
-                                    st.json({
-                                        "session_name": export_data['session_name'],
-                                        "export_timestamp": export_data['export_timestamp'],
-                                        "status": export_data['status'],
-                                        "validation": export_data['validation']
-                                    })
+                                st.divider()
 
-                                with preview_tabs[1]:
-                                    st.json(export_data['company_data'])
+                                # Preview of export
+                                with st.expander("👁️ Preview Export Data", expanded=False):
+                                    preview_tabs = st.tabs(["📋 Summary", "🏢 Company", "📚 Module", "🎮 Config"])
+                                    export_data = st.session_state.final_export_data
 
-                                with preview_tabs[2]:
-                                    st.json(export_data['module_data'])
+                                    with preview_tabs[0]:
+                                        st.json({
+                                            "session_name": export_data['session_name'],
+                                            "export_timestamp": export_data['export_timestamp'],
+                                            "status": export_data['status'],
+                                            "validation": export_data['validation']
+                                        })
 
-                                with preview_tabs[3]:
-                                    st.json(export_data['simulation_config'])
+                                    with preview_tabs[1]:
+                                        st.json(export_data['company_data'])
+
+                                    with preview_tabs[2]:
+                                        st.json(export_data['module_data'])
+
+                                    with preview_tabs[3]:
+                                        st.json(export_data['simulation_config'])
+                            else:
+                                st.info("👆 Click 'Prepare Export Package' to generate download files.")
 
                         else:
                             st.info("👆 Check the confirmation box above to enable export options.")
