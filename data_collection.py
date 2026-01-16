@@ -301,10 +301,22 @@ def save_extracted_data(company_data: Dict, module_data: Dict, session_name: str
     return filepath
 
 def load_extracted_data(filepath: str) -> Optional[Dict]:
-    """Load previously extracted data"""
+    """Load previously extracted data and normalize structure"""
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+
+        # Normalize metrics structure: ensure all metrics have priority field
+        if 'company_data' in data and 'metrics' in data['company_data']:
+            for metric_key, metric_info in data['company_data']['metrics'].items():
+                if isinstance(metric_info, dict):
+                    # If priority field is missing or is 'General', set to None
+                    if 'priority' not in metric_info:
+                        metric_info['priority'] = None
+                    elif metric_info['priority'] not in ["High", "Medium"]:
+                        metric_info['priority'] = None
+
+        return data
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
@@ -716,11 +728,14 @@ def main():
 
                     if st.button("Add Metric", key="add_metric_btn"):
                         if new_metric_name and new_metric_name not in metrics:
+                            # Store priority as High/Medium or None for consistent structure
+                            priority_value = new_metric_priority if new_metric_priority in ["High", "Medium"] else None
+
                             st.session_state.audit_data['company_data']['metrics'][new_metric_name] = {
                                 "value": new_metric_value,
                                 "unit": new_metric_unit,
                                 "description": new_metric_desc,
-                                "priority": new_metric_priority
+                                "priority": priority_value
                             }
                             st.session_state.audit_modified = True
                             st.success(f"Added metric: {new_metric_name}")
@@ -774,7 +789,9 @@ def main():
                                     st.session_state.audit_modified = True
 
                             with col4:
-                                current_priority = metric_info.get('priority', 'General')
+                                # Get current priority, default to 'General' if None or missing
+                                current_priority_raw = metric_info.get('priority')
+                                current_priority = current_priority_raw if current_priority_raw in ["High", "Medium"] else 'General'
                                 priority_idx = safe_index(priority_options, current_priority, 0)
                                 new_priority = st.selectbox(
                                     "Priority",
@@ -784,7 +801,9 @@ def main():
                                     label_visibility="collapsed"
                                 )
                                 if new_priority != current_priority:
-                                    st.session_state.audit_data['company_data']['metrics'][metric_key]['priority'] = new_priority
+                                    # Store as High/Medium or None for consistent structure
+                                    priority_value = new_priority if new_priority in ["High", "Medium"] else None
+                                    st.session_state.audit_data['company_data']['metrics'][metric_key]['priority'] = priority_value
                                     st.session_state.audit_modified = True
 
                             with col5:
@@ -813,9 +832,6 @@ def main():
                 st.subheader("👥 Board Members")
                 board_members = company_data.get('board_members', [])
 
-                # Director type options
-                director_types = ["Independent Director", "Executive Director", "Non-Executive Director", "Nominee Director", "Promoter Director"]
-
                 # Add new board member
                 with st.expander("➕ Add New Board Member", expanded=False):
                     col1, col2 = st.columns(2)
@@ -824,13 +840,11 @@ def main():
                     with col2:
                         new_member_role = st.text_input("Role/Title", key="new_member_role")
 
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2 = st.columns(2)
                     with col1:
                         new_member_expertise = st.text_input("Expertise/Domain", key="new_member_expertise", placeholder="e.g., Finance, Technology, Legal")
                     with col2:
                         new_member_tenure = st.number_input("Tenure (years)", key="new_member_tenure", min_value=0, max_value=50, value=0)
-                    with col3:
-                        new_member_type = st.selectbox("Director Type", options=director_types, key="new_member_type")
 
                     new_member_personality = st.text_area("Personality Description", key="new_member_personality", height=80)
 
@@ -841,7 +855,6 @@ def main():
                                 "role": new_member_role,
                                 "expertise": new_member_expertise,
                                 "tenure_years": new_member_tenure,
-                                "director_type": new_member_type,
                                 "personality": new_member_personality
                             })
                             st.session_state.audit_modified = True
@@ -851,29 +864,35 @@ def main():
                             st.error("Please enter name and role")
 
                 # Edit/Remove board members
-                with st.expander(f"📝 Edit Board Members ({len(board_members)} total)", expanded=True):
+                # Always read from session state for current data
+                current_board_members = st.session_state.audit_data.get('company_data', {}).get('board_members', [])
+                with st.expander(f"📝 Edit Board Members ({len(current_board_members)} total)", expanded=True):
                     members_to_remove = []
-                    for i, member in enumerate(board_members):
+                    for i, member in enumerate(current_board_members):
                         st.markdown(f"**👤 {member.get('name', f'Member {i+1}')}**")
                         col1, col2, col3 = st.columns([2, 2, 0.5])
 
                         with col1:
+                            # Read from session state to get current value
+                            current_name = st.session_state.audit_data['company_data']['board_members'][i].get('name', '')
                             new_name = st.text_input(
                                 "Name",
-                                value=member.get('name', ''),
+                                value=current_name,
                                 key=f"member_name_{i}"
                             )
-                            if new_name != member.get('name'):
+                            if new_name != current_name:
                                 st.session_state.audit_data['company_data']['board_members'][i]['name'] = new_name
                                 st.session_state.audit_modified = True
 
                         with col2:
+                            # Read from session state to get current value
+                            current_role = st.session_state.audit_data['company_data']['board_members'][i].get('role', '')
                             new_role = st.text_input(
                                 "Role",
-                                value=member.get('role', ''),
+                                value=current_role,
                                 key=f"member_role_{i}"
                             )
-                            if new_role != member.get('role'):
+                            if new_role != current_role:
                                 st.session_state.audit_data['company_data']['board_members'][i]['role'] = new_role
                                 st.session_state.audit_modified = True
 
@@ -882,51 +901,44 @@ def main():
                                 members_to_remove.append(i)
 
                         # Additional fields row
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2 = st.columns(2)
 
                         with col1:
+                            # Read from session state to get current value
+                            current_expertise = st.session_state.audit_data['company_data']['board_members'][i].get('expertise', '')
                             new_expertise = st.text_input(
                                 "Expertise/Domain",
-                                value=member.get('expertise', ''),
+                                value=current_expertise,
                                 key=f"member_expertise_{i}",
                                 placeholder="e.g., Finance, Technology"
                             )
-                            if new_expertise != member.get('expertise', ''):
+                            if new_expertise != current_expertise:
                                 st.session_state.audit_data['company_data']['board_members'][i]['expertise'] = new_expertise
                                 st.session_state.audit_modified = True
 
                         with col2:
+                            # Read from session state to get current value
+                            current_tenure = st.session_state.audit_data['company_data']['board_members'][i].get('tenure_years', 0)
                             new_tenure = st.number_input(
                                 "Tenure (years)",
-                                value=int(member.get('tenure_years', 0)),
+                                value=int(current_tenure),
                                 min_value=0,
                                 max_value=50,
                                 key=f"member_tenure_{i}"
                             )
-                            if new_tenure != member.get('tenure_years', 0):
+                            if new_tenure != current_tenure:
                                 st.session_state.audit_data['company_data']['board_members'][i]['tenure_years'] = new_tenure
                                 st.session_state.audit_modified = True
 
-                        with col3:
-                            current_type = member.get('director_type', 'Independent Director')
-                            type_index = safe_index(director_types, current_type, 0)
-                            new_type = st.selectbox(
-                                "Director Type",
-                                options=director_types,
-                                index=type_index,
-                                key=f"member_type_{i}"
-                            )
-                            if new_type != current_type:
-                                st.session_state.audit_data['company_data']['board_members'][i]['director_type'] = new_type
-                                st.session_state.audit_modified = True
-
+                        # Read from session state to get current value
+                        current_personality = st.session_state.audit_data['company_data']['board_members'][i].get('personality', '')
                         new_personality = st.text_area(
                             "Personality",
-                            value=member.get('personality', ''),
+                            value=current_personality,
                             key=f"member_personality_{i}",
                             height=60
                         )
-                        if new_personality != member.get('personality'):
+                        if new_personality != current_personality:
                             st.session_state.audit_data['company_data']['board_members'][i]['personality'] = new_personality
                             st.session_state.audit_modified = True
 
@@ -2003,10 +2015,10 @@ def main():
 
                 rounds = st.session_state.simulation_config.get('rounds', [])
 
-                # Get available focus areas from loaded data
+                # Get available focus areas from loaded data - include ALL problems and topics
                 company_problems = st.session_state.planning_session_data.get('company_data', {}).get('current_problems', [])
                 module_topics = [t.get('name', '') for t in st.session_state.planning_session_data.get('module_data', {}).get('topics', [])]
-                focus_options = ["None (Auto-select)", "Custom (Enter below)"] + company_problems[:5] + module_topics[:5]
+                focus_options = ["None (Auto-select)", "Custom (Enter below)"] + company_problems + module_topics
 
                 for i, round_config in enumerate(rounds):
                     with st.expander(f"Round {i + 1}", expanded=(i < 3)):
