@@ -1786,15 +1786,16 @@ def main():
 
         st.markdown("---")
 
-        # File selection
-        json_files = [f for f in os.listdir('.') if f.endswith('.json')]
+        # File selection - use the directory where app.py is located
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        json_files = [f for f in os.listdir(app_dir) if f.endswith('.json')]
 
         if json_files:
             selected_file = st.selectbox(
                 "Select Simulation File",
                 json_files
             )
-            st.session_state.selected_file = selected_file
+            st.session_state.selected_file = os.path.join(app_dir, selected_file)
         else:
             st.warning("No JSON files found in the directory.")
             st.session_state.selected_file = None
