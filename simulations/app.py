@@ -1780,16 +1780,9 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # API Key input
-        api_key = st.text_input(
-            "Google AI API Key",
-            type="password",
-            help="Enter your Google AI API key for Gemini"
-        )
-
-        if api_key:
-            st.session_state.api_key = api_key
-            st.success("API Key configured!")
+        # Load API key from Streamlit secrets
+        if "GEMINI_API_KEY" in st.secrets:
+            st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
 
         st.markdown("---")
 
@@ -1946,15 +1939,13 @@ def main():
 
     # Check prerequisites
     if not st.session_state.get('api_key'):
-        st.warning("⚠️ Please enter your Google AI API Key in the sidebar to start the simulation.")
+        st.error("⚠️ API Key not configured. Please add GEMINI_API_KEY to your Streamlit secrets.")
         st.markdown("""
-        ### Getting Started
-        1. Enter your Google AI API key in the sidebar
-        2. Select a simulation file
-        3. Choose your role
-        4. Begin the simulation
-
-        **Note:** You can get a Google AI API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+        ### Configuration Required
+        Add your Google AI API key to `.streamlit/secrets.toml`:
+        ```toml
+        GEMINI_API_KEY = "your-api-key-here"
+        ```
         """)
         return
 
