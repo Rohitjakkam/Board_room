@@ -1244,6 +1244,7 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
                            use_container_width=True):
                     st.session_state[f"selected_option_{state.current_round}"] = opt
                     st.session_state[f"decision_text_{state.current_round}"] = f"Option {opt['letter']}: {opt['text']}"
+                    st.rerun()
 
         st.markdown("---")
         st.markdown("**Or provide your detailed reasoning:**")
@@ -1254,7 +1255,7 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
     decision = st.text_area(
         "Enter your decision and reasoning:",
         value=prefill,
-        key=f"decision_{state.current_round}",
+        key=f"decision_input_{state.current_round}",
         placeholder="Describe your decision, the rationale behind it, and how you would implement it...",
         height=200
     )
