@@ -1232,6 +1232,11 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
     # Decision Phase
     st.markdown("### ✅ Your Decision")
 
+    # Initialize decision text key if not exists
+    decision_key = f"decision_input_{state.current_round}"
+    if decision_key not in st.session_state:
+        st.session_state[decision_key] = ""
+
     # Clickable options if parsed
     if options:
         st.markdown("**Quick Select an Option:**")
@@ -1243,19 +1248,16 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
                            key=f"option_{opt['letter']}_{state.current_round}",
                            use_container_width=True):
                     st.session_state[f"selected_option_{state.current_round}"] = opt
-                    st.session_state[f"decision_text_{state.current_round}"] = f"Option {opt['letter']}: {opt['text']}"
+                    # Directly set the widget's session state key
+                    st.session_state[decision_key] = f"Option {opt['letter']}: {opt['text']}"
                     st.rerun()
 
         st.markdown("---")
         st.markdown("**Or provide your detailed reasoning:**")
 
-    # Get pre-filled decision if option was clicked
-    prefill = st.session_state.get(f"decision_text_{state.current_round}", "")
-
     decision = st.text_area(
         "Enter your decision and reasoning:",
-        value=prefill,
-        key=f"decision_input_{state.current_round}",
+        key=decision_key,
         placeholder="Describe your decision, the rationale behind it, and how you would implement it...",
         height=200
     )
