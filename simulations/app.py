@@ -2878,25 +2878,39 @@ def main():
 
     # Main content area
     if not st.session_state.get('player_role'):
-        # Role selection phase
-        st.markdown("### Step 1: Choose Your Role")
-        st.markdown("Select which board member you want to play as during this simulation.")
+        # Phase 1: Show all business details, metrics, and module information first
+        st.markdown("### 📊 Step 1: Review Business Details")
+        st.markdown("Review the company information, current challenges, and module details before selecting your role.")
+
+        st.markdown("---")
+
+        # Company Overview
+        st.markdown("### 🏢 Company Overview")
+        display_company_dashboard(company_data)
+
+        st.markdown("---")
+
+        # Current Problems/Challenges
+        st.markdown("### ⚠️ Current Challenges")
+        display_current_problems(company_data['current_problems'])
+
+        st.markdown("---")
+
+        # Module Information
+        st.markdown("### 📚 Module Information")
+        display_module_info(module_data)
+
+        st.markdown("---")
+
+        # Phase 2: Role selection after reviewing all details
+        st.markdown("### 👤 Step 2: Choose Your Role")
+        st.markdown("Now that you've reviewed the business context, select which board member you want to play as during this simulation.")
 
         selected_role = display_board_members_for_selection(company_data['board_members'])
 
         if selected_role:
             st.session_state.player_role = selected_role
             st.rerun()
-
-        # Also show company and module info
-        st.markdown("---")
-        st.markdown("### 📊 Company Overview")
-        display_company_dashboard(company_data)
-        display_current_problems(company_data['current_problems'])
-
-        st.markdown("---")
-        st.markdown("### 📚 Module Information")
-        display_module_info(module_data)
 
     elif not st.session_state.simulation_started:
         # Setup phase - show company and module info after role selection
