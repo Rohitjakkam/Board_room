@@ -7,6 +7,7 @@ import streamlit as st
 import json
 import os
 import time
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -14,6 +15,10 @@ from enum import Enum
 
 # Google Generative AI direct import
 import google.generativeai as genai
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Time pressure settings (in minutes)
 TIME_PRESSURE_MINUTES = {
@@ -149,6 +154,52 @@ st.markdown("""
         font-size: 0.9rem;
         margin-top: 0.5rem;
     }
+    .stance-card {
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        border-left: 4px solid #666;
+    }
+    .stance-approve {
+        background: #d4edda;
+        border-left-color: #28a745;
+    }
+    .stance-oppose {
+        background: #f8d7da;
+        border-left-color: #dc3545;
+    }
+    .stance-neutral {
+        background: #fff3cd;
+        border-left-color: #ffc107;
+    }
+    .stance-convinced {
+        background: #d1ecf1;
+        border-left-color: #17a2b8;
+    }
+    .deliberation-header {
+        background: linear-gradient(135deg, #f0f7ff 0%, #e6f0ff 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    .debate-box {
+        background: #ffffff;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+        margin: 0.5rem 0;
+    }
+    .conviction-bar {
+        height: 8px;
+        background: #e9ecef;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .conviction-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #ffc107 0%, #dc3545 100%);
+        border-radius: 4px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -268,6 +319,120 @@ As the {committee['name']}, provide a collective perspective that:
 - References relevant governance frameworks and best practices
 
 Respond as a unified committee voice, acknowledging different member perspectives where relevant."""
+
+
+def get_member_stance_prompt(member: Dict, company_data: Dict, module_data: Dict,
+                              scenario: str, player_decision: str, player_role: Dict) -> str:
+    """Generate prompt for a board member to evaluate the player's decision"""
+    return f"""You are {member['name']}, {member['role']} at {company_data['company_name']}.
+
+PERSONALITY & BACKGROUND:
+{member['personality']}
+
+EXPERTISE: {member['expertise']}
+TENURE: {member['tenure_years']} years on the board
+
+YOUR TASK: Evaluate a fellow board member's decision and determine your stance.
+
+SCENARIO PRESENTED:
+{scenario}
+
+DECISION MADE BY {player_role['name']} ({player_role['role']}):
+{player_decision}
+
+Based on your expertise in {member['expertise']} and your personality:
+1. Would you APPROVE, OPPOSE, or remain NEUTRAL on this decision?
+2. How does this decision relate to your area of expertise?
+3. What is your honest reaction?
+
+Respond in this EXACT format:
+STANCE: [APPROVE/OPPOSE/NEUTRAL]
+CONVICTION_LEVEL: [1-10, where 10 is absolute certainty]
+EXPERTISE_RELEVANCE: [Brief explanation of how your expertise relates to this decision]
+REACTION: [Your 2-3 sentence reaction as this board member, in first person]
+COUNTER_OPINION: [If OPPOSE: Your specific objection and what you believe should be done instead. If APPROVE/NEUTRAL: Write "N/A"]
+
+Stay in character. Consider how {member['name']}'s biases and priorities would influence their view."""
+
+
+def get_debate_evaluation_prompt(member: Dict, company_data: Dict,
+                                  original_counter_opinion: str,
+                                  player_response: str,
+                                  debate_history: List[Dict],
+                                  player_role: Dict) -> str:
+    """Generate prompt to evaluate player's response to a dissenter's argument"""
+
+    history_text = ""
+    for exchange in debate_history:
+        history_text += f"\n{member['name']}'s argument: {exchange.get('dissenter_argument', '')}"
+        history_text += f"\n{player_role['name']}'s response: {exchange.get('player_response', '')}\n"
+
+    return f"""You are {member['name']}, {member['role']} at {company_data['company_name']}.
+
+PERSONALITY & BACKGROUND:
+{member['personality']}
+
+EXPERTISE: {member['expertise']}
+
+You OPPOSED a decision and raised this counter-opinion:
+"{original_counter_opinion}"
+
+DEBATE HISTORY SO FAR:
+{history_text if history_text else "This is the first exchange."}
+
+{player_role['name']} ({player_role['role']}) NOW RESPONDS:
+"{player_response}"
+
+Evaluate this response considering:
+1. Does it address your specific concerns?
+2. Is the reasoning sound and well-supported?
+3. Does it account for your area of expertise ({member['expertise']})?
+4. Would {member['name']} be convinced by this argument?
+
+Respond in this EXACT format:
+EVALUATION: [2-3 sentences assessing the response quality]
+RESPONSE_SCORE: [0-100, how effective the response was]
+STANCE_CHANGED: [YES/NO - has this response convinced you?]
+FOLLOW_UP: [If STANCE_CHANGED is NO: Your follow-up challenge or continued objection. If YES: Your acknowledgment of their point and why you now support the decision]
+
+Remember to stay in character as {member['name']}."""
+
+
+def get_consultation_alignment_prompt(consultations: List[Dict],
+                                       player_decision: str,
+                                       member_stances: Dict) -> str:
+    """Generate prompt to evaluate how well player's consultations aligned with their decision"""
+
+    consultation_text = "\n".join([
+        f"- Consulted {c.get('member', 'Unknown')}: Asked about '{c.get('content', '')[:100]}...'"
+        for c in consultations if c.get('role') == 'user'
+    ])
+
+    approving_members = [name for name, stance in member_stances.items()
+                         if stance.get('stance') in ['APPROVE', 'approve']]
+    opposing_members = [name for name, stance in member_stances.items()
+                        if stance.get('stance') in ['OPPOSE', 'oppose']]
+
+    return f"""Analyze the alignment between a player's board consultations and their final decision.
+
+CONSULTATIONS MADE:
+{consultation_text if consultation_text else "No consultations were made."}
+
+FINAL DECISION:
+{player_decision}
+
+BOARD MEMBER REACTIONS:
+- Approving: {', '.join(approving_members) if approving_members else 'None'}
+- Opposing: {', '.join(opposing_members) if opposing_members else 'None'}
+
+Evaluate:
+1. Did the player consult members whose expertise was relevant to their decision?
+2. Did the consultations help anticipate board opposition?
+3. Was the consultation strategy effective?
+
+Respond in this EXACT format:
+ALIGNMENT_SCORE: [0-100]
+REASONING: [2-3 sentences explaining the score]"""
 
 
 def get_scenario_generator_prompt(company_data: Dict, module_data: Dict, round_config: Dict, player_role: Dict) -> str:
@@ -745,6 +910,238 @@ ENCOURAGEMENT: [Motivational feedback for the learner]"""
     }
 
 
+def generate_member_stances(llm: genai.GenerativeModel, company_data: Dict,
+                             module_data: Dict, scenario: str,
+                             player_decision: str, player_role: Dict) -> Dict[str, Dict]:
+    """Generate each board member's stance on the player's decision"""
+    logger.debug(f"generate_member_stances called with {len(company_data.get('board_members', []))} board members")
+
+    stances = {}
+    available_members = [m for m in company_data['board_members']
+                         if m['name'] != player_role['name']]
+
+    logger.debug(f"Processing {len(available_members)} available members (excluding player)")
+
+    for member in available_members:
+        logger.debug(f"Generating stance for {member['name']}")
+        prompt = get_member_stance_prompt(member, company_data, module_data,
+                                          scenario, player_decision, player_role)
+
+        try:
+            response = llm.generate_content(prompt)
+            content = response.text
+            logger.debug(f"Got response for {member['name']}, length: {len(content)}")
+        except Exception as e:
+            logger.error(f"Error getting stance for {member['name']}: {e}")
+            content = "STANCE: NEUTRAL\nCONVICTION_LEVEL: 5\nREACTION: Unable to evaluate.\nCOUNTER_OPINION: N/A"
+
+        # Parse response
+        stance = "NEUTRAL"
+        conviction = 5
+        relevance = ""
+        reaction = ""
+        counter_opinion = None
+
+        if "STANCE:" in content:
+            stance_line = content.split("STANCE:")[1].split("\n")[0].strip().upper()
+            if "APPROVE" in stance_line:
+                stance = "APPROVE"
+            elif "OPPOSE" in stance_line:
+                stance = "OPPOSE"
+            else:
+                stance = "NEUTRAL"
+
+        if "CONVICTION_LEVEL:" in content:
+            try:
+                conv_str = content.split("CONVICTION_LEVEL:")[1].split("\n")[0].strip()
+                conviction = int(''.join(filter(str.isdigit, conv_str[:3])))
+                conviction = max(1, min(10, conviction))
+            except:
+                conviction = 5
+
+        if "EXPERTISE_RELEVANCE:" in content:
+            try:
+                relevance = content.split("EXPERTISE_RELEVANCE:")[1].split("REACTION:")[0].strip()
+            except:
+                pass
+
+        if "REACTION:" in content:
+            try:
+                reaction = content.split("REACTION:")[1].split("COUNTER_OPINION:")[0].strip()
+            except:
+                pass
+
+        if "COUNTER_OPINION:" in content and stance == "OPPOSE":
+            try:
+                counter_opinion = content.split("COUNTER_OPINION:")[1].strip()
+                if counter_opinion.upper().startswith("N/A"):
+                    counter_opinion = None
+            except:
+                pass
+
+        stances[member['name']] = {
+            'member_name': member['name'],
+            'member_role': member['role'],
+            'member_expertise': member['expertise'],
+            'stance': stance,
+            'initial_reaction': reaction,
+            'counter_opinion': counter_opinion,
+            'expertise_relevance': relevance,
+            'conviction_level': conviction,
+            'convinced_in_round': None,
+            'debate_exchanges': 0
+        }
+        logger.debug(f"Member {member['name']} stance: {stance}, conviction: {conviction}")
+
+    logger.debug(f"Generated stances for {len(stances)} members")
+    return stances
+
+
+def evaluate_debate_response(llm: genai.GenerativeModel, member: Dict,
+                              company_data: Dict, original_counter: str,
+                              player_response: str, debate_history: List[Dict],
+                              player_role: Dict) -> Dict:
+    """Evaluate player's response to a dissenter and determine if stance changes"""
+
+    prompt = get_debate_evaluation_prompt(member, company_data, original_counter,
+                                           player_response, debate_history, player_role)
+
+    response = llm.generate_content(prompt)
+    content = response.text
+
+    evaluation = ""
+    score = 50
+    stance_changed = False
+    follow_up = ""
+
+    if "EVALUATION:" in content:
+        try:
+            evaluation = content.split("EVALUATION:")[1].split("RESPONSE_SCORE:")[0].strip()
+        except:
+            pass
+
+    if "RESPONSE_SCORE:" in content:
+        try:
+            score_str = content.split("RESPONSE_SCORE:")[1].split("\n")[0].strip()
+            score = int(''.join(filter(str.isdigit, score_str[:3])))
+            score = max(0, min(100, score))
+        except:
+            score = 50
+
+    if "STANCE_CHANGED:" in content:
+        stance_line = content.split("STANCE_CHANGED:")[1].split("\n")[0].strip().upper()
+        stance_changed = "YES" in stance_line
+
+    if "FOLLOW_UP:" in content:
+        try:
+            follow_up = content.split("FOLLOW_UP:")[1].strip()
+        except:
+            pass
+
+    return {
+        'evaluation': evaluation,
+        'score': score,
+        'stance_changed': stance_changed,
+        'follow_up': follow_up
+    }
+
+
+def evaluate_consultation_alignment(llm: genai.GenerativeModel, consultations: List[Dict],
+                                     player_decision: str, member_stances: Dict) -> Dict:
+    """Evaluate how well player's consultations aligned with their decision"""
+
+    prompt = get_consultation_alignment_prompt(consultations, player_decision, member_stances)
+
+    response = llm.generate_content(prompt)
+    content = response.text
+
+    alignment_score = 50
+    reasoning = ""
+
+    if "ALIGNMENT_SCORE:" in content:
+        try:
+            score_str = content.split("ALIGNMENT_SCORE:")[1].split("\n")[0].strip()
+            alignment_score = int(''.join(filter(str.isdigit, score_str[:3])))
+            alignment_score = max(0, min(100, alignment_score))
+        except:
+            alignment_score = 50
+
+    if "REASONING:" in content:
+        try:
+            reasoning = content.split("REASONING:")[1].strip()
+        except:
+            pass
+
+    return {
+        'alignment_score': alignment_score,
+        'reasoning': reasoning
+    }
+
+
+def calculate_board_effectiveness_score(round_number: int,
+                                          member_stances: Dict,
+                                          debate_history: List[Dict],
+                                          consultation_alignment: float,
+                                          force_submitted: bool,
+                                          max_debate_rounds: int = 3) -> Dict:
+    """Calculate the board effectiveness score for a round"""
+
+    total_members = len(member_stances)
+    initially_approving = sum(1 for s in member_stances.values()
+                              if s.get('stance') == 'APPROVE')
+    initially_opposing = sum(1 for s in member_stances.values()
+                             if s.get('stance') == 'OPPOSE')
+    convinced = sum(1 for s in member_stances.values()
+                    if s.get('convinced_in_round') is not None)
+
+    # Count total debate exchanges
+    total_debate_exchanges = sum(s.get('debate_exchanges', 0) for s in member_stances.values())
+
+    # Score components (total 100 points)
+
+    # 1. Initial approval rate (25 points max)
+    initial_approval_score = (initially_approving / max(total_members, 1)) * 25
+
+    # 2. Consultation alignment (25 points max)
+    consultation_score = (consultation_alignment / 100) * 25
+
+    # 3. Debate effectiveness (30 points max)
+    if initially_opposing > 0:
+        debate_effectiveness = (convinced / initially_opposing) * 30
+    else:
+        debate_effectiveness = 30  # No opposition = full points
+
+    # 4. Efficiency bonus (20 points max)
+    if force_submitted:
+        efficiency_score = 5  # Penalty for force submit
+    elif initially_opposing == 0:
+        efficiency_score = 20  # No debate needed = full efficiency
+    elif total_debate_exchanges == 0:
+        efficiency_score = 20
+    else:
+        # Fewer exchanges = better efficiency
+        efficiency_score = max(5, 20 - (total_debate_exchanges * 2))
+
+    total_score = initial_approval_score + consultation_score + debate_effectiveness + efficiency_score
+
+    return {
+        'round_number': round_number,
+        'consultation_alignment_score': consultation_alignment,
+        'members_initially_approving': initially_approving,
+        'members_initially_opposing': initially_opposing,
+        'members_convinced': convinced,
+        'total_debate_exchanges': total_debate_exchanges,
+        'force_submitted': force_submitted,
+        'deliberation_score': round(total_score, 1),
+        'score_breakdown': {
+            'initial_approval': round(initial_approval_score, 1),
+            'consultation': round(consultation_score, 1),
+            'debate_effectiveness': round(debate_effectiveness, 1),
+            'efficiency': round(efficiency_score, 1)
+        }
+    }
+
+
 def display_company_dashboard(company_data: Dict):
     """Display company metrics dashboard"""
     st.subheader(f"📊 {company_data['company_name']} Dashboard")
@@ -922,6 +1319,275 @@ def parse_scenario_options(scenario: str) -> List[Dict]:
 def get_time_pressure_minutes(time_pressure: str) -> int:
     """Get the time limit in minutes based on time pressure setting"""
     return TIME_PRESSURE_MINUTES.get(time_pressure, 10)
+
+
+def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
+                                state: SimulationState, player_decision: str) -> bool:
+    """
+    Display and manage the board deliberation phase.
+    Returns True if deliberation is complete, False if still in progress.
+    """
+    logger.debug(f"display_deliberation_phase called for round {state.current_round}")
+
+    company_data = data['company_data']
+    module_data = data['module_data']  # Used in generate_member_stances
+    player_role = st.session_state.get('player_role')
+    round_num = state.current_round
+
+    if not player_role:
+        logger.error("player_role not found in session state!")
+        st.error("Error: Player role not found. Please restart the simulation.")
+        return False
+
+    # Session state keys for this round
+    delib_phase_key = f"deliberation_phase_{round_num}"
+    stances_key = f"member_stances_{round_num}"
+    current_dissenter_key = f"current_dissenter_{round_num}"
+    debate_history_key = f"debate_history_{round_num}"
+    force_key = f"force_submitted_{round_num}"
+
+    # Initialize deliberation state if needed
+    if delib_phase_key not in st.session_state:
+        st.session_state[delib_phase_key] = 'inactive'
+        logger.debug(f"Initialized delib_phase to 'inactive'")
+
+    logger.debug(f"Current delib_phase: {st.session_state[delib_phase_key]}")
+
+    # PHASE 1: Generate member stances (on first entry)
+    if st.session_state[delib_phase_key] == 'inactive':
+        logger.debug("Starting stance generation (phase: inactive -> generating)")
+        st.session_state[delib_phase_key] = 'generating'
+        st.session_state[debate_history_key] = []
+        st.session_state[force_key] = False
+        st.session_state[current_dissenter_key] = 0
+
+        with st.spinner("Board members are reviewing your decision..."):
+            scenario = st.session_state.get(f"scenario_round_{round_num}", "")
+            logger.debug(f"Generating stances for scenario length: {len(scenario)}, decision length: {len(player_decision)}")
+            try:
+                stances = generate_member_stances(llm, company_data, module_data,
+                                                  scenario, player_decision, player_role)
+                st.session_state[stances_key] = stances
+                logger.debug(f"Generated {len(stances)} member stances")
+            except Exception as e:
+                logger.error(f"Error generating stances: {e}")
+                st.error(f"Error generating board member stances: {e}")
+                st.session_state[delib_phase_key] = 'inactive'
+                return False
+
+        st.session_state[delib_phase_key] = 'review'
+        logger.debug("Stance generation complete, transitioning to review phase")
+        st.rerun()
+
+    # Get current state
+    member_stances = st.session_state.get(stances_key, {})
+
+    # Display section header
+    st.markdown("### 🏛️ Board Deliberation")
+    st.markdown("""
+    <div class="deliberation-header">
+        <strong>The board is reviewing your decision.</strong> Members will share their perspectives based on their expertise.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Categorize members by stance
+    approving = [(n, s) for n, s in member_stances.items() if s['stance'] == 'APPROVE']
+    opposing = [(n, s) for n, s in member_stances.items()
+                if s['stance'] == 'OPPOSE' and s.get('convinced_in_round') is None]
+    neutral = [(n, s) for n, s in member_stances.items() if s['stance'] == 'NEUTRAL']
+    convinced = [(n, s) for n, s in member_stances.items() if s.get('convinced_in_round') is not None]
+
+    # Display summary counts
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Supporting", len(approving), delta_color="normal")
+    with col2:
+        st.metric("Opposing", len(opposing), delta_color="inverse")
+    with col3:
+        st.metric("Neutral", len(neutral))
+    with col4:
+        st.metric("Convinced", len(convinced), delta_color="normal")
+
+    st.markdown("---")
+
+    # Display approving members
+    if approving:
+        st.markdown("**✅ Supporting your decision:**")
+        for name, stance in approving:
+            with st.expander(f"✅ {name} ({stance['member_role']}) - APPROVES"):
+                st.markdown(f"*\"{stance['initial_reaction']}\"*")
+                st.caption(f"**Expertise:** {stance['member_expertise']} | **Relevance:** {stance['expertise_relevance']}")
+
+    # Display neutral members
+    if neutral:
+        st.markdown("**➖ Neutral:**")
+        for name, stance in neutral:
+            with st.expander(f"➖ {name} ({stance['member_role']}) - NEUTRAL"):
+                st.markdown(f"*\"{stance['initial_reaction']}\"*")
+                st.caption(f"**Expertise:** {stance['member_expertise']}")
+
+    # Display convinced members
+    if convinced:
+        st.markdown("**🔄 Convinced during debate:**")
+        for name, stance in convinced:
+            with st.expander(f"🔄 {name} ({stance['member_role']}) - CONVINCED"):
+                st.success(f"Convinced in debate round {stance['convinced_in_round']}")
+                st.markdown(f"*Original objection:* {stance.get('original_counter_opinion', stance.get('counter_opinion', 'N/A'))}")
+
+    # Display opposing members with debate interface
+    if opposing:
+        st.markdown("**⚠️ Opposing your decision:**")
+
+        # Get current dissenter index
+        current_idx = st.session_state.get(current_dissenter_key, 0)
+
+        for idx, (name, stance) in enumerate(opposing):
+            conviction_pct = stance['conviction_level'] * 10
+            is_current = (idx == current_idx)
+
+            if is_current:
+                # Active debate with this dissenter
+                st.markdown(f"""
+                <div class="stance-card stance-oppose">
+                    <h4>⚠️ {name} ({stance['member_role']}) - OPPOSES</h4>
+                    <p><strong>Expertise:</strong> {stance['member_expertise']}</p>
+                    <p><em>"{stance['initial_reaction']}"</em></p>
+                    <div class="conviction-bar">
+                        <div class="conviction-fill" style="width: {conviction_pct}%;"></div>
+                    </div>
+                    <small>Conviction Level: {stance['conviction_level']}/10</small>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Show counter opinion
+                st.error(f"**Counter-opinion:** {stance['counter_opinion']}")
+
+                # Debate exchanges for this member
+                exchanges = stance.get('debate_exchanges', 0)
+                max_exchanges = 3
+
+                if exchanges < max_exchanges:
+                    st.markdown(f"#### 💬 Debate with {name} (Exchange {exchanges + 1} of {max_exchanges})")
+
+                    # Use exchange number in key so it resets when exchange increments
+                    response_key = f"debate_response_{round_num}_{name}_{exchanges}"
+
+                    player_response = st.text_area(
+                        f"Your response to {name}'s objection:",
+                        key=response_key,
+                        placeholder="Address their specific concerns and provide your reasoning...",
+                        height=120
+                    )
+
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        if st.button(f"Submit Response", key=f"submit_debate_{round_num}_{name}_{exchanges}",
+                                    type="primary", disabled=not player_response):
+                            if player_response:
+                                with st.spinner(f"{name} is considering your response..."):
+                                    member_data = next(m for m in company_data['board_members']
+                                                     if m['name'] == name)
+
+                                    # Get debate history for this member
+                                    member_debate_history = [
+                                        h for h in st.session_state.get(debate_history_key, [])
+                                        if h.get('dissenter_name') == name
+                                    ]
+
+                                    result = evaluate_debate_response(
+                                        llm, member_data, company_data,
+                                        stance['counter_opinion'],
+                                        player_response,
+                                        member_debate_history,
+                                        player_role
+                                    )
+
+                                    # Record the exchange
+                                    exchange_record = {
+                                        'dissenter_name': name,
+                                        'dissenter_argument': stance['counter_opinion'],
+                                        'player_response': player_response,
+                                        'llm_evaluation': result['evaluation'],
+                                        'response_score': result['score'],
+                                        'stance_changed': result['stance_changed']
+                                    }
+                                    st.session_state[debate_history_key].append(exchange_record)
+
+                                    # Update stance data
+                                    st.session_state[stances_key][name]['debate_exchanges'] = exchanges + 1
+
+                                    if result['stance_changed']:
+                                        # Store original counter opinion before updating
+                                        st.session_state[stances_key][name]['original_counter_opinion'] = stance['counter_opinion']
+                                        st.session_state[stances_key][name]['convinced_in_round'] = exchanges + 1
+                                        # Move to next dissenter
+                                        st.session_state[current_dissenter_key] = current_idx + 1
+                                    else:
+                                        # Update counter_opinion for next exchange
+                                        st.session_state[stances_key][name]['counter_opinion'] = result['follow_up']
+
+                                st.rerun()
+
+                    with col2:
+                        if st.button(f"Skip to Next Dissenter", key=f"skip_{round_num}_{name}"):
+                            st.session_state[current_dissenter_key] = current_idx + 1
+                            st.rerun()
+                else:
+                    st.warning(f"Maximum debate exchanges ({max_exchanges}) reached with {name}.")
+                    if st.button(f"Move to Next Dissenter", key=f"move_next_{round_num}_{name}"):
+                        st.session_state[current_dissenter_key] = current_idx + 1
+                        st.rerun()
+            else:
+                # Not the current dissenter - show collapsed
+                with st.expander(f"⚠️ {name} ({stance['member_role']}) - OPPOSES (waiting)"):
+                    st.markdown(f"*\"{stance['initial_reaction']}\"*")
+                    st.caption(f"Conviction: {stance['conviction_level']}/10")
+
+    # Check if all dissenters have been addressed
+    all_addressed = (st.session_state.get(current_dissenter_key, 0) >= len(opposing))
+
+    st.markdown("---")
+
+    # Resolution options
+    col1, col2, col3 = st.columns([1, 2, 1])
+
+    with col2:
+        if len(opposing) == 0 or all_addressed:
+            # All resolved
+            if len(opposing) == 0:
+                st.success("✅ All board members support your decision!")
+            else:
+                remaining_opposed = sum(1 for n, s in member_stances.items()
+                                       if s['stance'] == 'OPPOSE' and s.get('convinced_in_round') is None)
+                if remaining_opposed > 0:
+                    st.warning(f"⚠️ {remaining_opposed} board member(s) still oppose after debate.")
+                else:
+                    st.success("✅ All dissenters have been convinced!")
+
+            if st.button("✓ Proceed with Decision", key=f"proceed_{round_num}", type="primary",
+                        use_container_width=True):
+                logger.debug("Proceed with Decision clicked")
+                st.session_state[delib_phase_key] = 'resolved'
+                st.rerun()
+        else:
+            # Still have dissenters to address
+            remaining = len(opposing) - st.session_state.get(current_dissenter_key, 0)
+            st.info(f"📋 {remaining} dissenter(s) remaining to address.")
+
+        # Force submit option (always available)
+        st.markdown("---")
+        if st.button("⚡ Force Submit Decision", key=f"force_submit_{round_num}",
+                    help="Submit without full board approval (scoring penalty applies)",
+                    use_container_width=True):
+            logger.debug("Force Submit clicked")
+            st.session_state[force_key] = True
+            st.session_state[delib_phase_key] = 'resolved'
+            st.rerun()
+
+    # Check if deliberation is complete
+    is_resolved = st.session_state.get(delib_phase_key) == 'resolved'
+    logger.debug(f"Deliberation phase returning: {is_resolved}")
+    return is_resolved
 
 
 def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
@@ -1262,42 +1928,130 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
         height=200
     )
 
-    col1, col2 = st.columns([1, 4])
+    # Check if we're in deliberation phase
+    pending_decision_key = f"pending_decision_{state.current_round}"
+    delib_phase_key = f"deliberation_phase_{state.current_round}"
+    eval_key = f"evaluation_{state.current_round}"
 
-    with col1:
-        if st.button("Submit Decision", key=f"submit_decision_{state.current_round}", type="primary"):
-            if decision:
-                with st.spinner("Evaluating your decision and calculating impacts..."):
-                    evaluation = evaluate_decision(
-                        llm, company_data, module_data,
-                        scenario, decision, round_config, player_role
-                    )
+    logger.debug(f"Round {state.current_round}: delib_phase_key={delib_phase_key}, exists={delib_phase_key in st.session_state}")
+    logger.debug(f"Round {state.current_round}: pending_decision_key={pending_decision_key}, exists={pending_decision_key in st.session_state}")
+    if delib_phase_key in st.session_state:
+        logger.debug(f"Round {state.current_round}: delib_phase value='{st.session_state[delib_phase_key]}'")
 
-                    st.session_state[f"evaluation_{state.current_round}"] = evaluation
+    # If deliberation has been triggered (pending decision exists and not yet resolved), show deliberation UI
+    # 'inactive' means we just submitted and need to start deliberation
+    # 'generating', 'review', 'debate' mean we're in the middle of deliberation
+    pending_exists = pending_decision_key in st.session_state
+    delib_not_exists = delib_phase_key not in st.session_state
+    delib_not_resolved = st.session_state.get(delib_phase_key) != 'resolved'
+    should_enter_delib = pending_exists and (delib_not_exists or delib_not_resolved)
+    logger.debug(f"Round {state.current_round}: pending_exists={pending_exists}, delib_not_exists={delib_not_exists}, delib_not_resolved={delib_not_resolved}, should_enter_delib={should_enter_delib}")
 
-                    # Apply metric impacts
-                    if 'metric_impacts' in evaluation:
-                        impacts = evaluation['metric_impacts']
+    if should_enter_delib:
+        logger.debug(f"Round {state.current_round}: Entering deliberation phase")
 
-                        # Get current metrics or initialize from company data
-                        current_metrics = st.session_state.get('current_metrics', company_data['metrics'].copy())
+        deliberation_complete = display_deliberation_phase(
+            llm, data, state, st.session_state[pending_decision_key]
+        )
+        logger.debug(f"Round {state.current_round}: deliberation_complete={deliberation_complete}")
 
-                        # Apply the impacts
-                        updated_metrics = apply_metric_impacts(current_metrics, impacts.get('impacts', {}))
-                        st.session_state.current_metrics = updated_metrics
+        if not deliberation_complete:
+            logger.debug(f"Round {state.current_round}: Returning from deliberation block (deliberation not complete)")
+            return  # Don't show rest of round while in deliberation
+        # If deliberation is complete, fall through to evaluation below
 
-                        # Store impact reasons for display
-                        st.session_state.metric_impact_reasons = impacts.get('reasons', {})
+    # Check if deliberation is resolved but evaluation hasn't been done yet
+    deliberation_resolved = st.session_state.get(delib_phase_key) == 'resolved'
+    needs_evaluation = pending_decision_key in st.session_state and deliberation_resolved and eval_key not in st.session_state
 
-                        # Store impact summary
-                        st.session_state[f"impact_summary_{state.current_round}"] = impacts.get('summary', '')
+    logger.debug(f"Round {state.current_round}: deliberation_resolved={deliberation_resolved}, needs_evaluation={needs_evaluation}")
 
-                    st.session_state.round_complete = True
-            else:
-                st.warning("Please enter your decision before submitting.")
+    if needs_evaluation:
+        logger.debug("Running evaluation after deliberation")
+        with st.spinner("Evaluating your decision and calculating impacts..."):
+            # Calculate board effectiveness
+            stances = st.session_state.get(f"member_stances_{state.current_round}", {})
+            debate_history = st.session_state.get(f"debate_history_{state.current_round}", [])
+            force_submitted = st.session_state.get(f"force_submitted_{state.current_round}", False)
+
+            # Get consultation alignment
+            consultations = st.session_state.get('conversation_history', [])
+            alignment_result = evaluate_consultation_alignment(
+                llm, consultations, st.session_state[pending_decision_key], stances
+            )
+
+            # Calculate effectiveness score
+            effectiveness = calculate_board_effectiveness_score(
+                state.current_round, stances, debate_history,
+                alignment_result.get('alignment_score', 50), force_submitted
+            )
+
+            # Store effectiveness data
+            if "board_effectiveness_history" not in st.session_state:
+                st.session_state.board_effectiveness_history = []
+            st.session_state.board_effectiveness_history.append(effectiveness)
+            st.session_state[f"board_effectiveness_{state.current_round}"] = effectiveness
+
+            # Now evaluate the decision
+            evaluation = evaluate_decision(
+                llm, company_data, module_data,
+                scenario, st.session_state[pending_decision_key], round_config, player_role
+            )
+
+            # Add board effectiveness to evaluation
+            evaluation['board_effectiveness'] = effectiveness
+
+            st.session_state[eval_key] = evaluation
+            logger.debug(f"Evaluation stored, score: {evaluation.get('score', 'N/A')}")
+
+            # Apply metric impacts
+            if 'metric_impacts' in evaluation:
+                impacts = evaluation['metric_impacts']
+                logger.debug(f"Applying metric impacts")
+
+                # Get current metrics or initialize from company data
+                current_metrics = st.session_state.get('current_metrics', company_data['metrics'].copy())
+
+                # Apply the impacts (with penalty for force submit)
+                impact_values = impacts.get('impacts', {})
+                if force_submitted:
+                    logger.debug("Applying force submit penalty (15% reduction)")
+                    # Apply 15% reduction to positive impacts as penalty
+                    impact_values = {k: v * 0.85 if v > 0 else v for k, v in impact_values.items()}
+
+                updated_metrics = apply_metric_impacts(current_metrics, impact_values)
+                st.session_state.current_metrics = updated_metrics
+
+                # Store impact reasons for display
+                st.session_state.metric_impact_reasons = impacts.get('reasons', {})
+
+                # Store impact summary
+                st.session_state[f"impact_summary_{state.current_round}"] = impacts.get('summary', '')
+
+            st.session_state.round_complete = True
+            logger.debug("Round marked complete, calling rerun")
+        st.rerun()
+
+    logger.debug(f"Round {state.current_round}: Passed deliberation check, showing submit/evaluation UI")
+
+    # Only show submit button if evaluation not yet done for this round
+    if eval_key not in st.session_state:
+        col1, col2 = st.columns([1, 4])
+
+        with col1:
+            if st.button("Submit Decision", key=f"submit_decision_{state.current_round}", type="primary"):
+                if decision:
+                    logger.debug(f"Submit Decision clicked. Decision length: {len(decision)}")
+                    # Store decision and reset deliberation phase to start fresh
+                    st.session_state[pending_decision_key] = decision
+                    st.session_state[delib_phase_key] = 'inactive'
+                    logger.debug(f"Stored pending decision, reset delib_phase to 'inactive', triggering deliberation")
+                    st.rerun()
+                else:
+                    st.warning("Please enter your decision before submitting.")
 
     # Display evaluation if available
-    eval_key = f"evaluation_{state.current_round}"
+    logger.debug(f"Round {state.current_round}: eval_key exists={eval_key in st.session_state}")
     if eval_key in st.session_state:
         evaluation = st.session_state[eval_key]
 
@@ -1391,17 +2145,23 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
 
         # Next round button
         if st.button("Proceed to Next Round", key=f"next_round_{state.current_round}"):
+            logger.debug(f"Proceed to Next Round clicked, advancing from round {state.current_round}")
+            current_round = state.current_round
             st.session_state.current_round += 1
             st.session_state.conversation_history = []
             st.session_state.round_complete = False
             st.session_state.total_score = st.session_state.get('total_score', 0) + score
             # Clear impact reasons for next round display
             st.session_state.metric_impact_reasons = {}
+            # Clear deliberation state for the completed round (keep history for final summary)
+            # Note: We don't need to clear these as they're round-specific keys
+            logger.debug(f"Advanced to round {st.session_state.current_round}")
             st.rerun()
 
 
-def calculate_overall_grade(initial_metrics: Dict, final_metrics: Dict, avg_decision_score: float) -> Dict:
-    """Calculate overall simulation grade based on metric changes and decision scores"""
+def calculate_overall_grade(initial_metrics: Dict, final_metrics: Dict, avg_decision_score: float,
+                            avg_board_effectiveness: float = None) -> Dict:
+    """Calculate overall simulation grade based on metric changes, decision scores, and board effectiveness"""
 
     # Key metrics to evaluate (with weights and whether higher is better)
     key_metrics = {
@@ -1457,8 +2217,15 @@ def calculate_overall_grade(initial_metrics: Dict, final_metrics: Dict, avg_deci
     else:
         normalized_metric_score = 50
 
-    # Combine decision score (60%) and metric performance (40%)
-    final_score = (avg_decision_score * 0.6) + (normalized_metric_score * 0.4)
+    # Combine scores with board effectiveness if available
+    # New weights: Decision 50%, Metrics 30%, Board Effectiveness 20%
+    if avg_board_effectiveness is not None:
+        final_score = (avg_decision_score * 0.5) + (normalized_metric_score * 0.3) + (avg_board_effectiveness * 0.2)
+        board_effectiveness_component = avg_board_effectiveness * 0.2
+    else:
+        # Fallback to original weights if no board effectiveness data
+        final_score = (avg_decision_score * 0.6) + (normalized_metric_score * 0.4)
+        board_effectiveness_component = 0
 
     # Determine grade
     if final_score >= 90:
@@ -1499,12 +2266,111 @@ def calculate_overall_grade(initial_metrics: Dict, final_metrics: Dict, avg_deci
         'grade': grade,
         'grade_description': grade_description,
         'final_score': final_score,
-        'decision_score_component': avg_decision_score * 0.6,
-        'metric_score_component': normalized_metric_score * 0.4,
+        'decision_score_component': avg_decision_score * (0.5 if avg_board_effectiveness is not None else 0.6),
+        'metric_score_component': normalized_metric_score * (0.3 if avg_board_effectiveness is not None else 0.4),
+        'board_effectiveness_component': board_effectiveness_component,
         'metrics_improved': improvements,
         'metrics_declined': declines,
-        'normalized_metric_score': normalized_metric_score
+        'normalized_metric_score': normalized_metric_score,
+        'avg_board_effectiveness': avg_board_effectiveness
     }
+
+
+def display_board_effectiveness_summary(total_rounds: int):
+    """Display the board effectiveness score in the final summary"""
+
+    st.markdown("### 🏛️ Board Effectiveness Performance")
+
+    effectiveness_history = st.session_state.get("board_effectiveness_history", [])
+
+    if not effectiveness_history:
+        st.info("No board effectiveness data available.")
+        return 0
+
+    # Calculate overall score
+    total_score = sum(r['deliberation_score'] for r in effectiveness_history)
+    avg_score = total_score / len(effectiveness_history)
+
+    # Display overall grade
+    if avg_score >= 80:
+        grade = "A"
+        grade_color = "#28a745"
+        grade_desc = "Excellent Board Management"
+    elif avg_score >= 60:
+        grade = "B"
+        grade_color = "#5cb85c"
+        grade_desc = "Good Board Management"
+    elif avg_score >= 40:
+        grade = "C"
+        grade_color = "#ffc107"
+        grade_desc = "Fair Board Management"
+    else:
+        grade = "D"
+        grade_color = "#dc3545"
+        grade_desc = "Needs Improvement"
+
+    st.markdown(f"""
+    <div style="text-align: center; padding: 1.5rem; background: linear-gradient(135deg, #f0f7ff 0%, #e6f0ff 100%); border-radius: 10px; margin-bottom: 1rem;">
+        <h2 style="color: {grade_color}; margin: 0;">Board Effectiveness: {grade}</h2>
+        <p style="color: #666; font-size: 1.1rem;">{grade_desc}</p>
+        <p style="color: #333;">Average Score: {avg_score:.1f}/100</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Stats
+    col1, col2, col3, col4 = st.columns(4)
+
+    total_convinced = sum(r.get('members_convinced', 0) for r in effectiveness_history)
+    total_force_submits = sum(1 for r in effectiveness_history if r.get('force_submitted', False))
+    total_debates = sum(r.get('total_debate_exchanges', 0) for r in effectiveness_history)
+    total_opposing = sum(r.get('members_initially_opposing', 0) for r in effectiveness_history)
+
+    with col1:
+        st.metric("Dissenters Convinced", total_convinced,
+                 delta=f"of {total_opposing}" if total_opposing > 0 else None)
+    with col2:
+        st.metric("Force Submits", total_force_submits,
+                 delta_color="inverse" if total_force_submits > 0 else "normal")
+    with col3:
+        st.metric("Debate Exchanges", total_debates)
+    with col4:
+        avg_alignment = sum(r.get('consultation_alignment_score', 50) for r in effectiveness_history) / len(effectiveness_history)
+        st.metric("Avg Consultation Alignment", f"{avg_alignment:.0f}%")
+
+    # Per-round breakdown
+    with st.expander("📊 Round-by-Round Board Effectiveness", expanded=False):
+        for round_data in effectiveness_history:
+            score = round_data.get('deliberation_score', 0)
+            score_color = "#28a745" if score >= 70 else "#ffc107" if score >= 50 else "#dc3545"
+
+            st.markdown(f"""
+            **Round {round_data.get('round_number', 0) + 1}:**
+            <span style="color: {score_color}; font-weight: bold;">{score}/100</span>
+            """, unsafe_allow_html=True)
+
+            breakdown = round_data.get('score_breakdown', {})
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.caption(f"Initial Approval: {breakdown.get('initial_approval', 0)}/25")
+            with col2:
+                st.caption(f"Consultation: {breakdown.get('consultation', 0)}/25")
+            with col3:
+                st.caption(f"Debate: {breakdown.get('debate_effectiveness', 0)}/30")
+            with col4:
+                st.caption(f"Efficiency: {breakdown.get('efficiency', 0)}/20")
+
+            # Show key stats
+            approving = round_data.get('members_initially_approving', 0)
+            opposing = round_data.get('members_initially_opposing', 0)
+            convinced = round_data.get('members_convinced', 0)
+
+            st.caption(f"👍 {approving} approved | 👎 {opposing} opposed | 🔄 {convinced} convinced")
+
+            if round_data.get('force_submitted', False):
+                st.warning("⚠️ Decision was force-submitted")
+            st.markdown("---")
+
+    return avg_score
 
 
 def display_final_summary(data: Dict):
@@ -1522,8 +2388,14 @@ def display_final_summary(data: Dict):
     initial_metrics = st.session_state.get('initial_metrics', data['company_data']['metrics'])
     final_metrics = st.session_state.get('current_metrics', data['company_data']['metrics'])
 
-    # Calculate overall grade
-    grade_info = calculate_overall_grade(initial_metrics, final_metrics, avg_score)
+    # Calculate board effectiveness average
+    effectiveness_history = st.session_state.get("board_effectiveness_history", [])
+    avg_board_effectiveness = None
+    if effectiveness_history:
+        avg_board_effectiveness = sum(r['deliberation_score'] for r in effectiveness_history) / len(effectiveness_history)
+
+    # Calculate overall grade with board effectiveness
+    grade_info = calculate_overall_grade(initial_metrics, final_metrics, avg_score, avg_board_effectiveness)
 
     # Display Overall Grade prominently
     grade_color = {
@@ -1558,17 +2430,39 @@ def display_final_summary(data: Dict):
 
     # Score composition
     st.markdown("### 📊 Score Composition")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        **Decision Quality (60%):** {grade_info['decision_score_component']:.1f} pts
-        *Based on your choices across {rounds_completed} rounds*
-        """)
-    with col2:
-        st.markdown(f"""
-        **Business Impact (40%):** {grade_info['metric_score_component']:.1f} pts
-        *Based on metric improvements: {grade_info['normalized_metric_score']:.1f}/100*
-        """)
+    if avg_board_effectiveness is not None:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f"""
+            **Decision Quality (50%):** {grade_info['decision_score_component']:.1f} pts
+            *Based on your choices across {rounds_completed} rounds*
+            """)
+        with col2:
+            st.markdown(f"""
+            **Business Impact (30%):** {grade_info['metric_score_component']:.1f} pts
+            *Based on metric improvements: {grade_info['normalized_metric_score']:.1f}/100*
+            """)
+        with col3:
+            st.markdown(f"""
+            **Board Effectiveness (20%):** {grade_info['board_effectiveness_component']:.1f} pts
+            *Based on board management: {avg_board_effectiveness:.1f}/100*
+            """)
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"""
+            **Decision Quality (60%):** {grade_info['decision_score_component']:.1f} pts
+            *Based on your choices across {rounds_completed} rounds*
+            """)
+        with col2:
+            st.markdown(f"""
+            **Business Impact (40%):** {grade_info['metric_score_component']:.1f} pts
+            *Based on metric improvements: {grade_info['normalized_metric_score']:.1f}/100*
+            """)
+
+    # Display Board Effectiveness Summary
+    if effectiveness_history:
+        display_board_effectiveness_summary(rounds_completed)
 
     # Metrics Before vs After Comparison
     st.markdown("### 📈 Metrics Comparison: Before vs After Simulation")
