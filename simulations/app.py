@@ -421,7 +421,7 @@ def get_consultation_alignment_prompt(consultations: List[Dict],
     """Generate prompt to evaluate how well player's consultations aligned with their decision"""
 
     consultation_text = "\n".join([
-        f"- Consulted {c.get('member', 'Unknown')}: Asked about '{c.get('content', '')[:100]}...'"
+        f"- Consulted {c.get('member', 'Unknown')}: Asked about '{c.get('content', '')}'"
         for c in consultations if c.get('role') == 'user'
     ])
 
@@ -554,7 +554,7 @@ Address {player_role['name']} directly in your response."""
     else:
         # Multiple members - group discussion
         member_names = [m['name'] for m in members]
-        member_details = "\n".join([f"- {m['name']} ({m['role']}): {m['personality'][:150]}..." for m in members])
+        member_details = "\n".join([f"- {m['name']} ({m['role']}): {m['personality']}" for m in members])
 
         history_text = ""
         for entry in conversation_history[-10:]:
@@ -1275,7 +1275,7 @@ def display_board_members_for_selection(board_members: List[Dict]) -> Optional[D
                     <h4>{member['name']}</h4>
                     <p><strong>{member['role']}</strong></p>
                     <p><em>Expertise: {member['expertise']} | Tenure: {member['tenure_years']} years</em></p>
-                    <p style="font-size: 0.9rem;">{member['personality'][:150]}...</p>
+                    <p style="font-size: 0.9rem;">{member['personality']}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -1304,7 +1304,7 @@ def display_board_members(board_members: List[Dict], player_role: Optional[Dict]
                     <h4>{member['name']}{player_badge}</h4>
                     <p><strong>{member['role']}</strong></p>
                     <p><em>Expertise: {member['expertise']} | Tenure: {member['tenure_years']} years</em></p>
-                    <p style="font-size: 0.9rem;">{member['personality'][:200]}...</p>
+                    <p style="font-size: 0.9rem;">{member['personality']}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -1547,6 +1547,11 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
     debate_history_key = f"debate_history_{round_num}"
     force_key = f"force_submitted_{round_num}"
     pending_decision_key = f"pending_decision_{round_num}"
+    revision_key = f"revisions_round_{round_num}"
+
+    # Initialize revision counter if needed
+    if revision_key not in st.session_state:
+        st.session_state[revision_key] = 0
 
     # Initialize deliberation state if needed
     if delib_phase_key not in st.session_state:
@@ -1675,10 +1680,10 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
                     for i, hist in enumerate(member_history, 1):
                         with st.container():
                             st.markdown(f"**Exchange {i}:**")
-                            st.info(f"🎯 **{name}:** {hist.get('dissenter_argument', '')[:300]}...")
-                            st.success(f"💬 **Your response:** {hist.get('player_response', '')[:300]}...")
+                            st.info(f"🎯 **{name}:** {hist.get('dissenter_argument', '')}")
+                            st.success(f"💬 **Your response:** {hist.get('player_response', '')}")
                             if hist.get('llm_evaluation'):
-                                st.caption(f"📊 Evaluation: {hist.get('llm_evaluation', '')[:200]}...")
+                                st.caption(f"📊 Evaluation: {hist.get('llm_evaluation', '')}")
                     st.markdown("---")
 
                 # Show current counter opinion (updated after each exchange)
@@ -1788,7 +1793,10 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
                 if remaining_opposed > 0:
                     st.warning(f"⚠️ {remaining_opposed} board member(s) still oppose after debate.")
 
-                    # Offer option to revise the decision
+                    # Check if revision is still available
+                    revision_used = st.session_state.get(revision_key, 0) >= 1
+
+                    # Offer option to revise the decision (if not already used)
                     col_proceed, col_revise = st.columns(2)
                     with col_proceed:
                         if st.button("✓ Proceed Anyway", key=f"proceed_{round_num}", type="primary",
@@ -1797,22 +1805,27 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
                             st.session_state[delib_phase_key] = 'resolved'
                             st.rerun()
                     with col_revise:
-                        if st.button("✏️ Revise Decision", key=f"revise_{round_num}",
-                                    help="Go back and modify your decision based on board feedback",
-                                    use_container_width=True):
-                            logger.debug("Revise Decision clicked")
-                            # Clear deliberation state to allow re-submission
-                            if pending_decision_key in st.session_state:
-                                del st.session_state[pending_decision_key]
-                            if delib_phase_key in st.session_state:
-                                del st.session_state[delib_phase_key]
-                            if stances_key in st.session_state:
-                                del st.session_state[stances_key]
-                            if current_dissenter_key in st.session_state:
-                                del st.session_state[current_dissenter_key]
-                            if debate_history_key in st.session_state:
-                                del st.session_state[debate_history_key]
-                            st.rerun()
+                        if revision_used:
+                            st.warning("✏️ Revision already used this round")
+                        else:
+                            if st.button("✏️ Revise Decision", key=f"revise_{round_num}",
+                                        help="Go back and modify your decision (1 revision per round)",
+                                        use_container_width=True):
+                                logger.debug("Revise Decision clicked")
+                                # Increment revision counter
+                                st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
+                                # Clear deliberation state to allow re-submission
+                                if pending_decision_key in st.session_state:
+                                    del st.session_state[pending_decision_key]
+                                if delib_phase_key in st.session_state:
+                                    del st.session_state[delib_phase_key]
+                                if stances_key in st.session_state:
+                                    del st.session_state[stances_key]
+                                if current_dissenter_key in st.session_state:
+                                    del st.session_state[current_dissenter_key]
+                                if debate_history_key in st.session_state:
+                                    del st.session_state[debate_history_key]
+                                st.rerun()
                 else:
                     st.success("✅ All dissenters have been convinced!")
                     if st.button("✓ Proceed with Decision", key=f"proceed_{round_num}", type="primary",
@@ -1855,22 +1868,29 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
 
             if show_revise_here and col_revise_alt:
                 with col_revise_alt:
-                    if st.button("✏️ Revise Decision", key=f"revise_alt_{round_num}",
-                                help="Go back and modify your decision based on board feedback",
-                                use_container_width=True):
-                        logger.debug("Revise Decision (alt) clicked")
-                        # Clear deliberation state to allow re-submission
-                        if pending_decision_key in st.session_state:
-                            del st.session_state[pending_decision_key]
-                        if delib_phase_key in st.session_state:
-                            del st.session_state[delib_phase_key]
-                        if stances_key in st.session_state:
-                            del st.session_state[stances_key]
-                        if current_dissenter_key in st.session_state:
-                            del st.session_state[current_dissenter_key]
-                        if debate_history_key in st.session_state:
-                            del st.session_state[debate_history_key]
-                        st.rerun()
+                    # Check if revision is still available
+                    revision_used_alt = st.session_state.get(revision_key, 0) >= 1
+                    if revision_used_alt:
+                        st.warning("✏️ Revision already used")
+                    else:
+                        if st.button("✏️ Revise Decision", key=f"revise_alt_{round_num}",
+                                    help="Go back and modify your decision (1 revision per round)",
+                                    use_container_width=True):
+                            logger.debug("Revise Decision (alt) clicked")
+                            # Increment revision counter
+                            st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
+                            # Clear deliberation state to allow re-submission
+                            if pending_decision_key in st.session_state:
+                                del st.session_state[pending_decision_key]
+                            if delib_phase_key in st.session_state:
+                                del st.session_state[delib_phase_key]
+                            if stances_key in st.session_state:
+                                del st.session_state[stances_key]
+                            if current_dissenter_key in st.session_state:
+                                del st.session_state[current_dissenter_key]
+                            if debate_history_key in st.session_state:
+                                del st.session_state[debate_history_key]
+                            st.rerun()
 
     # Check if deliberation is complete
     is_resolved = st.session_state.get(delib_phase_key) == 'resolved'
@@ -1887,10 +1907,17 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
     round_config = data['simulation_config']['rounds'][state.current_round]
     player_role = st.session_state.get('player_role')
 
-    # Initialize consultation counter for this round
-    round_consult_key = f"consultations_round_{state.current_round}"
-    if round_consult_key not in st.session_state:
-        st.session_state[round_consult_key] = 0
+    # Initialize separate consultation counters for this round
+    board_consult_key = f"board_consultations_round_{state.current_round}"
+    committee_consult_key = f"committee_consultations_round_{state.current_round}"
+    revision_key = f"revisions_round_{state.current_round}"
+
+    if board_consult_key not in st.session_state:
+        st.session_state[board_consult_key] = 0
+    if committee_consult_key not in st.session_state:
+        st.session_state[committee_consult_key] = 0
+    if revision_key not in st.session_state:
+        st.session_state[revision_key] = 0
 
     # Initialize timer for this round
     timer_key = f"round_start_time_{state.current_round}"
@@ -1917,10 +1944,12 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
         """, unsafe_allow_html=True)
 
     with col2:
-        consultations_left = 2 - st.session_state[round_consult_key]
+        board_left = 1 - st.session_state[board_consult_key]
+        committee_left = 1 - st.session_state[committee_consult_key]
+        revision_left = 1 - st.session_state[revision_key]
         st.markdown(f"""
         <div class="consultation-counter">
-            🗣️ Consultations: {consultations_left}/2 remaining
+            👥 Director: {board_left}/1 | 🏛️ Committee: {committee_left}/1 | ✏️ Revise: {revision_left}/1
         </div>
         """, unsafe_allow_html=True)
 
@@ -2059,119 +2088,126 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
     # Consultation Section
     st.markdown("### 💬 Consultation")
 
-    consultations_remaining = 2 - st.session_state[round_consult_key]
+    board_consultation_used = st.session_state[board_consult_key] >= 1
+    committee_consultation_used = st.session_state[committee_consult_key] >= 1
 
-    if consultations_remaining > 0:
+    if not board_consultation_used or not committee_consultation_used:
         consult_tab1, consult_tab2 = st.tabs(["👥 Consult Board Members", "🏛️ Consult Committee"])
 
         with consult_tab1:
-            # Get available members (exclude player)
-            available_members = [m for m in company_data['board_members'] if m['name'] != player_role['name']]
-            member_names = [m['name'] for m in available_members]
+            if board_consultation_used:
+                st.warning("⚠️ You have already used your director consultation for this round.")
+            else:
+                # Get available members (exclude player)
+                available_members = [m for m in company_data['board_members'] if m['name'] != player_role['name']]
+                member_names = [m['name'] for m in available_members]
 
-            selected_members = st.multiselect(
-                "Select board member(s) to consult:",
-                member_names,
-                key=f"member_select_{state.current_round}",
-                help="You can select multiple members for a group discussion"
-            )
-
-            user_question = st.text_input(
-                "Your question or topic for discussion:",
-                key=f"member_question_{state.current_round}",
-                placeholder="e.g., What are your thoughts on the compliance implications?"
-            )
-
-            if st.button("Ask Board Member(s)", key=f"ask_members_btn_{state.current_round}",
-                        disabled=len(selected_members) == 0 or not user_question):
-                if selected_members and user_question:
-                    selected_member_data = [m for m in available_members if m['name'] in selected_members]
-
-                    with st.spinner(f"{'Board members are' if len(selected_members) > 1 else selected_members[0] + ' is'} responding..."):
-                        response = get_board_member_response(
-                            llm, selected_member_data, company_data, module_data,
-                            scenario, user_question,
-                            st.session_state.get('conversation_history', []),
-                            player_role
-                        )
-
-                        # Update consultation counter
-                        st.session_state[round_consult_key] += 1
-
-                        # Store in conversation history
-                        if 'conversation_history' not in st.session_state:
-                            st.session_state.conversation_history = []
-
-                        member_label = ", ".join(selected_members) if len(selected_members) > 1 else selected_members[0]
-
-                        st.session_state.conversation_history.append({
-                            'role': 'user',
-                            'content': user_question,
-                            'member': member_label
-                        })
-                        st.session_state.conversation_history.append({
-                            'role': 'assistant',
-                            'content': response,
-                            'member': member_label
-                        })
-
-                    st.rerun()
-
-        with consult_tab2:
-            # Committee consultation
-            committees = company_data.get('committees', [])
-
-            if committees:
-                committee_names = [c['name'] for c in committees]
-                selected_committee = st.selectbox(
-                    "Select committee to consult:",
-                    committee_names,
-                    key=f"committee_select_{state.current_round}"
+                selected_members = st.multiselect(
+                    "Select board member(s) to consult:",
+                    member_names,
+                    key=f"member_select_{state.current_round}",
+                    help="You can select multiple members for a group discussion (1 consultation per round)"
                 )
 
-                committee_question = st.text_input(
-                    "Your question for the committee:",
-                    key=f"committee_question_{state.current_round}",
-                    placeholder="e.g., What is the committee's recommendation on this matter?"
+                user_question = st.text_input(
+                    "Your question or topic for discussion:",
+                    key=f"member_question_{state.current_round}",
+                    placeholder="e.g., What are your thoughts on the compliance implications?"
                 )
 
-                if st.button("Consult Committee", key=f"ask_committee_btn_{state.current_round}",
-                            disabled=not committee_question):
-                    if committee_question:
-                        selected_committee_data = next(c for c in committees if c['name'] == selected_committee)
+                if st.button("Ask Board Member(s)", key=f"ask_members_btn_{state.current_round}",
+                            disabled=len(selected_members) == 0 or not user_question):
+                    if selected_members and user_question:
+                        selected_member_data = [m for m in available_members if m['name'] in selected_members]
 
-                        with st.spinner(f"{selected_committee} is deliberating..."):
-                            response = get_committee_response(
-                                llm, selected_committee_data, company_data, module_data,
-                                scenario, committee_question,
+                        with st.spinner(f"{'Board members are' if len(selected_members) > 1 else selected_members[0] + ' is'} responding..."):
+                            response = get_board_member_response(
+                                llm, selected_member_data, company_data, module_data,
+                                scenario, user_question,
                                 st.session_state.get('conversation_history', []),
-                                player_role,
-                                company_data['board_members']
+                                player_role
                             )
 
-                            # Update consultation counter
-                            st.session_state[round_consult_key] += 1
+                            # Update board consultation counter
+                            st.session_state[board_consult_key] += 1
 
                             # Store in conversation history
                             if 'conversation_history' not in st.session_state:
                                 st.session_state.conversation_history = []
 
+                            member_label = ", ".join(selected_members) if len(selected_members) > 1 else selected_members[0]
+
                             st.session_state.conversation_history.append({
                                 'role': 'user',
-                                'content': committee_question,
-                                'member': selected_committee
+                                'content': user_question,
+                                'member': member_label
                             })
                             st.session_state.conversation_history.append({
                                 'role': 'assistant',
                                 'content': response,
-                                'member': selected_committee
+                                'member': member_label
                             })
 
                         st.rerun()
+
+        with consult_tab2:
+            if committee_consultation_used:
+                st.warning("⚠️ You have already used your committee consultation for this round.")
             else:
-                st.info("No committees are available for consultation.")
+                # Committee consultation
+                committees = company_data.get('committees', [])
+
+                if committees:
+                    committee_names = [c['name'] for c in committees]
+                    selected_committee = st.selectbox(
+                        "Select committee to consult:",
+                        committee_names,
+                        key=f"committee_select_{state.current_round}"
+                    )
+
+                    committee_question = st.text_input(
+                        "Your question for the committee:",
+                        key=f"committee_question_{state.current_round}",
+                        placeholder="e.g., What is the committee's recommendation on this matter?"
+                    )
+
+                    if st.button("Consult Committee", key=f"ask_committee_btn_{state.current_round}",
+                                disabled=not committee_question):
+                        if committee_question:
+                            selected_committee_data = next(c for c in committees if c['name'] == selected_committee)
+
+                            with st.spinner(f"{selected_committee} is deliberating..."):
+                                response = get_committee_response(
+                                    llm, selected_committee_data, company_data, module_data,
+                                    scenario, committee_question,
+                                    st.session_state.get('conversation_history', []),
+                                    player_role,
+                                    company_data['board_members']
+                                )
+
+                                # Update committee consultation counter
+                                st.session_state[committee_consult_key] += 1
+
+                                # Store in conversation history
+                                if 'conversation_history' not in st.session_state:
+                                    st.session_state.conversation_history = []
+
+                                st.session_state.conversation_history.append({
+                                    'role': 'user',
+                                    'content': committee_question,
+                                    'member': selected_committee
+                                })
+                                st.session_state.conversation_history.append({
+                                    'role': 'assistant',
+                                    'content': response,
+                                    'member': selected_committee
+                                })
+
+                            st.rerun()
+                else:
+                    st.info("No committees are available for consultation.")
     else:
-        st.warning("⚠️ You have used all 2 consultations for this round. Please make your decision.")
+        st.warning("⚠️ You have used all consultations for this round. Please make your decision.")
 
     # Display conversation history for this round
     if 'conversation_history' in st.session_state and st.session_state.conversation_history:
@@ -2198,7 +2234,7 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
         option_cols = st.columns(2)
         for idx, opt in enumerate(options):
             with option_cols[idx % 2]:
-                if st.button(f"Option {opt['letter']}: {opt['text'][:50]}...",
+                if st.button(f"Option {opt['letter']}: {opt['text']}",
                            key=f"option_{opt['letter']}_{state.current_round}",
                            use_container_width=True):
                     st.session_state[f"selected_option_{state.current_round}"] = opt
@@ -2987,8 +3023,8 @@ def display_final_summary(data: Dict):
                 st.markdown("#### 📋 Scenario Presented")
                 with st.container():
                     st.markdown(f"""
-                    <div style="background: #fff3cd; padding: 1rem; border-radius: 8px; border-left: 4px solid #ffc107; max-height: 200px; overflow-y: auto;">
-                        {scenario[:1000]}{'...' if len(scenario) > 1000 else ''}
+                    <div style="background: #fff3cd; padding: 1rem; border-radius: 8px; border-left: 4px solid #ffc107; max-height: 400px; overflow-y: auto;">
+                        {scenario}
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -3123,12 +3159,9 @@ def main():
                 st.markdown(f"**{company_data.get('company_name', 'Company')}**")
                 st.caption(f"Industry: {company_data.get('industry', 'N/A')} | Founded: {company_data.get('founded', 'N/A')}")
 
-                # Company overview (abbreviated)
+                # Company overview
                 overview = company_data.get('company_overview', '')
-                if len(overview) > 300:
-                    st.markdown(f"{overview[:300]}...")
-                else:
-                    st.markdown(overview)
+                st.markdown(overview)
 
                 st.markdown("---")
 
@@ -3136,17 +3169,14 @@ def main():
                 st.markdown("**⚠️ Key Challenges:**")
                 problems = company_data.get('current_problems', [])
                 for problem in problems[:5]:  # Show first 5 challenges
-                    st.markdown(f"• {problem[:100]}{'...' if len(problem) > 100 else ''}")
+                    st.markdown(f"• {problem}")
 
                 st.markdown("---")
 
                 # Initial scenario
                 st.markdown("**📌 Initial Situation:**")
                 initial_scenario = company_data.get('initial_scenario', '')
-                if len(initial_scenario) > 400:
-                    st.markdown(f"{initial_scenario[:400]}...")
-                else:
-                    st.markdown(initial_scenario)
+                st.markdown(initial_scenario)
 
             # GOAL PROGRESS SECTION
             if 'game_goals' in st.session_state:
@@ -3359,8 +3389,8 @@ def main():
         # Header with simulation title
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, #1E3A5F 0%, #2d5a8a 100%); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; color: white;">
-            <h2 style="margin: 0; color: white;">Welcome to {company_data['company_name']} Board Simulation</h2>
-            <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">{module_data['module_name']}</p>
+            <h2 style="margin: 0; color: white;">Welcome to Boardroom Simulation, on "{module_data['module_name']}"</h2>
+            <p style="margin: 0.5rem 0 0 0; opacity: 0.9; font-style: italic;">Engineered by Directors' Institute.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -3368,11 +3398,71 @@ def main():
         game_goals = generate_game_goals(company_data['metrics'], simulation_config['total_rounds'])
         st.session_state.game_goals = game_goals
 
-        # ===== MISSION OBJECTIVES SECTION =====
-        st.markdown("### 🎯 Your Mission Objectives")
+        # ===== 1. COMPANY BRIEF =====
+        st.markdown("### 🏢 Company Brief")
+        st.markdown(f"""
+        <div style="background: #f8f9fa; padding: 1rem; border-radius: 10px; border-left: 4px solid #1E3A5F;">
+            <strong>{company_data['company_name']}</strong><br>
+            <span style="color: #666;">Industry: {company_data.get('industry', 'Technology')} | Founded: {company_data.get('founded', 'N/A')}</span>
+            <p style="margin-top: 0.8rem;">{company_data.get('company_overview', '')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ===== 2. INITIAL SCENARIO =====
+        st.markdown("### 📋 Initial Scenario")
+        st.markdown(f"""
+        <div style="background: #fff3cd; padding: 1rem; border-radius: 10px; border-left: 4px solid #ffc107;">
+            {company_data.get('initial_scenario', 'Scenario not available')}
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ===== 3. BOARD OF DIRECTORS =====
+        st.markdown("### 👥 Board of Directors")
+        board_cols = st.columns(3)
+        for idx, member in enumerate(company_data['board_members']):
+            with board_cols[idx % 3]:
+                st.markdown(f"""
+                <div style="background: #f8f9fa; padding: 0.8rem; border-radius: 8px; margin: 0.3rem 0; border-left: 3px solid #1E3A5F;">
+                    <strong>{member['name']}</strong><br>
+                    <span style="color: #666; font-size: 0.85rem;">{member['role']}</span><br>
+                    <span style="color: #888; font-size: 0.8rem;">Expertise: {member.get('expertise', 'N/A')}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ===== 4. CHALLENGES =====
+        st.markdown("### ⚠️ Current Challenges")
+        challenges_html = ""
+        for problem in company_data.get('current_problems', []):
+            challenges_html += f'<div style="background: #f8d7da; padding: 0.6rem; border-radius: 6px; margin: 0.3rem 0; border-left: 3px solid #dc3545; font-size: 0.9rem;">• {problem}</div>'
+        st.markdown(challenges_html, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ===== 5. KEY METRICS =====
+        st.markdown("### 📊 Key Metrics")
+        metrics = company_data['metrics']
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        with metric_col1:
+            st.metric("Revenue", f"₹{metrics['total_revenue_annual']['value']} Cr", f"+{metrics['revenue_growth_yoy']['value']}% YoY")
+        with metric_col2:
+            st.metric("Net Profit Margin", f"{metrics['net_profit_margin']['value']}%")
+        with metric_col3:
+            st.metric("Employees", f"{metrics['employee_count']['value']:,}")
+        with metric_col4:
+            st.metric("NPS Score", f"{metrics['net_promoter_score']['value']}")
+
+        st.markdown("---")
+
+        # ===== 6. MISSION OBJECTIVES =====
+        st.markdown("### 🎯 Mission Objectives")
         st.markdown(f"*Complete {simulation_config['total_rounds']} rounds of board decisions to achieve these targets:*")
 
-        # Display goals in a grid
         goal_cols = st.columns(3)
         for idx, goal in enumerate(game_goals[:6]):  # Show up to 6 goals
             with goal_cols[idx % 3]:
@@ -3398,51 +3488,8 @@ def main():
 
         st.markdown("---")
 
-        # Two-column layout for company info and scenario
-        col_left, col_right = st.columns([1, 1])
-
-        with col_left:
-            # 1. COMPANY BRIEF
-            st.markdown("### 🏢 Company Brief")
-            st.markdown(f"""
-            <div style="background: #f8f9fa; padding: 1rem; border-radius: 10px; border-left: 4px solid #1E3A5F;">
-                <strong>{company_data['company_name']}</strong><br>
-                <span style="color: #666;">Industry: {company_data.get('industry', 'Technology')} | Founded: {company_data.get('founded', 'N/A')}</span>
-                <p style="margin-top: 0.8rem;">{company_data.get('company_overview', '')[:500]}{'...' if len(company_data.get('company_overview', '')) > 500 else ''}</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Key Metrics Summary
-            st.markdown("#### 📊 Key Metrics")
-            metrics = company_data['metrics']
-            metric_col1, metric_col2 = st.columns(2)
-            with metric_col1:
-                st.metric("Revenue", f"₹{metrics['total_revenue_annual']['value']} Cr", f"+{metrics['revenue_growth_yoy']['value']}% YoY")
-                st.metric("Employees", f"{metrics['employee_count']['value']:,}")
-            with metric_col2:
-                st.metric("Net Profit Margin", f"{metrics['net_profit_margin']['value']}%")
-                st.metric("NPS Score", f"{metrics['net_promoter_score']['value']}")
-
-        with col_right:
-            # 2. SCENARIO DESCRIPTION
-            st.markdown("### 📋 Initial Scenario")
-            st.markdown(f"""
-            <div style="background: #fff3cd; padding: 1rem; border-radius: 10px; border-left: 4px solid #ffc107;">
-                {company_data.get('initial_scenario', 'Scenario not available')[:600]}{'...' if len(company_data.get('initial_scenario', '')) > 600 else ''}
-            </div>
-            """, unsafe_allow_html=True)
-
-            # 3. CHALLENGES
-            st.markdown("### ⚠️ Current Challenges")
-            challenges_html = ""
-            for problem in company_data.get('current_problems', [])[:5]:
-                challenges_html += f'<div style="background: #f8d7da; padding: 0.6rem; border-radius: 6px; margin: 0.3rem 0; border-left: 3px solid #dc3545; font-size: 0.9rem;">• {problem[:120]}{"..." if len(problem) > 120 else ""}</div>'
-            st.markdown(challenges_html, unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        # 4. LEARNING OBJECTIVES
-        st.markdown("### 🎯 Learning Objectives")
+        # ===== 7. LEARNING OBJECTIVES =====
+        st.markdown("### 📚 Learning Objectives")
         st.markdown(f"*{module_data.get('overview', '')}*")
 
         obj_cols = st.columns(3)
@@ -3457,7 +3504,7 @@ def main():
 
         st.markdown("---")
 
-        # 5. ROLE SELECTION
+        # ===== 8. CHOOSE YOUR BOARD ROLE =====
         st.markdown("### 👤 Choose Your Board Role")
         st.markdown("Select which board member you want to play as during this simulation:")
 
