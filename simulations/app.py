@@ -200,6 +200,23 @@ st.markdown("""
         background: linear-gradient(90deg, #ffc107 0%, #dc3545 100%);
         border-radius: 4px;
     }
+    .company-brief-section {
+        background: linear-gradient(135deg, #e8f4f8 0%, #d4e9ed 100%);
+        padding: 0.8rem;
+        border-radius: 8px;
+        border-left: 4px solid #17a2b8;
+        margin-bottom: 0.5rem;
+    }
+    .company-brief-header {
+        color: #1E3A5F;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+    .challenge-item {
+        color: #856404;
+        font-size: 0.85rem;
+        margin: 0.2rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -748,7 +765,8 @@ def evaluate_decision(llm: genai.GenerativeModel, company_data: Dict,
                       player_role: Dict) -> Dict:
     """Evaluate user's decision and provide feedback"""
 
-    evaluation_prompt = f"""You are a fair and constructive corporate governance educator and evaluator.
+    evaluation_prompt = f"""You are a STRICT and RIGOROUS corporate governance evaluator. Your role is to provide HONEST, ACCURATE assessments.
+DO NOT give undeserved praise. If a decision is poor, say so clearly. Be direct about mistakes and their consequences.
 
 COMPANY CONTEXT:
 {company_data['company_name']}
@@ -772,37 +790,47 @@ PLAYER'S DECISION:
 
 DIFFICULTY: {round_config['difficulty']}
 
-Evaluate the decision based on:
-1. Understanding of board governance principles
-2. Application of relevant legal frameworks (Companies Act, 2013)
-3. Consideration of stakeholder interests
-4. Strategic thinking and risk assessment
-5. Alignment with learning objectives
-6. Appropriateness for the player's role as {player_role['role']}
+SCORING GUIDELINES (BE STRICT):
+- 90-100: Exceptional - Decision demonstrates expert-level governance understanding, considers all stakeholders perfectly, and aligns with best practices
+- 75-89: Good - Solid decision with minor oversights, mostly correct approach
+- 60-74: Adequate - Decision has merit but misses important considerations
+- 40-59: Below Average - Decision shows significant gaps in understanding or poor judgment
+- 20-39: Poor - Decision fails to address key issues, may harm stakeholders
+- 0-19: Very Poor - Decision is fundamentally flawed, shows lack of basic governance understanding
+
+CRITICAL EVALUATION CRITERIA:
+1. Does the decision actually solve the problem presented?
+2. Are there obvious negative consequences the player ignored?
+3. Does the decision violate any governance principles or laws?
+4. Were stakeholder interests properly balanced?
+5. Is the decision appropriate for the player's role as {player_role['role']}?
 
 Provide your evaluation in this EXACT format:
-SCORE: [0-100]
+SCORE: [0-100] (Be HONEST - if decision is poor, give a low score)
 
-SCORE_REASONING: [Explain specifically why you gave this score. Break down the scoring:
-- Governance Understanding (0-25 pts): [points earned] - [brief explanation]
-- Legal/Regulatory Compliance (0-20 pts): [points earned] - [brief explanation]
-- Stakeholder Consideration (0-20 pts): [points earned] - [brief explanation]
-- Strategic Thinking (0-20 pts): [points earned] - [brief explanation]
-- Role Alignment (0-15 pts): [points earned] - [brief explanation]]
+SCORE_REASONING: [Explain SPECIFICALLY why you gave this score. Be critical where warranted:
+- Governance Understanding (0-25 pts): [points earned] - [what was right/wrong]
+- Legal/Regulatory Compliance (0-20 pts): [points earned] - [what was right/wrong]
+- Stakeholder Consideration (0-20 pts): [points earned] - [who was helped/harmed]
+- Strategic Thinking (0-20 pts): [points earned] - [strengths/weaknesses in approach]
+- Role Alignment (0-15 pts): [points earned] - [appropriate for their position?]]
 
-STRENGTHS: [What was done well - be specific with 2-3 bullet points]
+STRENGTHS: [What was done well - if little was done well, say "Limited strengths identified" and explain why]
 
-AREAS_FOR_IMPROVEMENT: [What could be better - be specific with 2-3 bullet points]
+AREAS_FOR_IMPROVEMENT: [What went wrong - be SPECIFIC and CRITICAL about mistakes. List 3-5 issues if the decision was poor]
 
-KEY_LEARNING_POINTS: [Relevant concepts from the module that apply - 2-3 points]
+KEY_LEARNING_POINTS: [What the player should have known/applied from the module - 2-4 points]
 
-BEST_APPROACH: [Describe in detail what the ideal/optimal decision would have been for this scenario. Include:
-- The recommended action
-- Key considerations that should have been addressed
+BEST_APPROACH: [Describe in detail what the CORRECT decision would have been:
+- The recommended action (be specific)
+- Why this approach is superior to what the player chose
+- Key considerations the player missed
 - How it aligns with corporate governance best practices
-- Expected positive outcomes of the ideal approach]
+- Expected outcomes if done correctly]
 
-ENCOURAGEMENT: [Motivational feedback for the learner]"""
+CRITICAL_FEEDBACK: [If score < 60, explain clearly what went WRONG and the potential negative consequences of this decision. Be direct but educational.]
+
+ENCOURAGEMENT: [ONLY if score >= 60, provide encouraging feedback. If score < 60, instead provide constructive guidance on how to improve.]"""
 
     response = llm.generate_content(evaluation_prompt)
 
@@ -810,7 +838,7 @@ ENCOURAGEMENT: [Motivational feedback for the learner]"""
     content = response.text
 
     # Extract score
-    score = 70  # Default score
+    score = 50  # Default score (neutral, not high)
     if "SCORE:" in content:
         try:
             score_line = content.split("SCORE:")[1].split("\n")[0]
@@ -884,6 +912,17 @@ ENCOURAGEMENT: [Motivational feedback for the learner]"""
         except:
             pass
 
+    # Extract critical feedback (for poor decisions)
+    critical_feedback = ""
+    if "CRITICAL_FEEDBACK:" in content:
+        try:
+            critical_section = content.split("CRITICAL_FEEDBACK:")[1]
+            if "ENCOURAGEMENT:" in critical_section:
+                critical_section = critical_section.split("ENCOURAGEMENT:")[0]
+            critical_feedback = critical_section.strip()
+        except:
+            pass
+
     # Extract encouragement
     encouragement = ""
     if "ENCOURAGEMENT:" in content:
@@ -903,6 +942,7 @@ ENCOURAGEMENT: [Motivational feedback for the learner]"""
         "improvements": improvements,
         "learning_points": learning_points,
         "best_approach": best_approach,
+        "critical_feedback": critical_feedback,
         "encouragement": encouragement,
         "decision": decision,
         "scenario": scenario,
@@ -1316,6 +1356,167 @@ def parse_scenario_options(scenario: str) -> List[Dict]:
     return options
 
 
+def generate_game_goals(metrics: Dict, total_rounds: int) -> List[Dict]:
+    """
+    Generate clear numeric goals/milestones for the simulation.
+    Goals are based on improving key metrics by realistic targets.
+    """
+    goals = []
+
+    # Financial Goals
+    if 'revenue_growth_yoy' in metrics:
+        current = metrics['revenue_growth_yoy']['value']
+        target = current + 5  # Aim for 5% more growth
+        goals.append({
+            'category': 'Financial',
+            'metric_key': 'revenue_growth_yoy',
+            'name': 'Revenue Growth',
+            'description': 'Increase year-over-year revenue growth',
+            'current': current,
+            'target': target,
+            'unit': '%',
+            'icon': '📈',
+            'priority': 'high'
+        })
+
+    if 'net_profit_margin' in metrics:
+        current = metrics['net_profit_margin']['value']
+        target = min(current + 3, 25)  # Aim for 3% improvement, cap at 25%
+        goals.append({
+            'category': 'Financial',
+            'metric_key': 'net_profit_margin',
+            'name': 'Profit Margin',
+            'description': 'Improve net profit margin',
+            'current': current,
+            'target': target,
+            'unit': '%',
+            'icon': '💰',
+            'priority': 'high'
+        })
+
+    # Customer Goals
+    if 'net_promoter_score' in metrics:
+        current = metrics['net_promoter_score']['value']
+        target = min(current + 10, 80)  # Aim for +10 NPS, cap at 80
+        goals.append({
+            'category': 'Customer',
+            'metric_key': 'net_promoter_score',
+            'name': 'Customer Satisfaction',
+            'description': 'Improve Net Promoter Score',
+            'current': current,
+            'target': target,
+            'unit': '',
+            'icon': '😊',
+            'priority': 'high'
+        })
+
+    if 'customer_churn_rate_annual' in metrics:
+        current = metrics['customer_churn_rate_annual']['value']
+        target = max(current - 2, 3)  # Reduce churn by 2%, minimum 3%
+        goals.append({
+            'category': 'Customer',
+            'metric_key': 'customer_churn_rate_annual',
+            'name': 'Reduce Churn',
+            'description': 'Decrease customer churn rate',
+            'current': current,
+            'target': target,
+            'unit': '%',
+            'icon': '🔒',
+            'priority': 'medium',
+            'lower_is_better': True
+        })
+
+    # Operational Goals
+    if 'platform_uptime' in metrics:
+        current = metrics['platform_uptime']['value']
+        target = min(current + 0.5, 99.99)  # Aim for higher uptime
+        goals.append({
+            'category': 'Operations',
+            'metric_key': 'platform_uptime',
+            'name': 'System Reliability',
+            'description': 'Maintain platform uptime',
+            'current': current,
+            'target': target,
+            'unit': '%',
+            'icon': '⚙️',
+            'priority': 'medium'
+        })
+
+    # Risk Goals
+    if 'open_high_severity_risks' in metrics:
+        current = metrics['open_high_severity_risks']['value']
+        target = max(current - 2, 0)  # Reduce risks
+        goals.append({
+            'category': 'Risk',
+            'metric_key': 'open_high_severity_risks',
+            'name': 'Risk Mitigation',
+            'description': 'Reduce high-severity open risks',
+            'current': current,
+            'target': target,
+            'unit': '',
+            'icon': '🛡️',
+            'priority': 'high',
+            'lower_is_better': True
+        })
+
+    # HR Goals
+    if 'employee_engagement_score' in metrics:
+        current = metrics['employee_engagement_score']['value']
+        target = min(current + 5, 95)  # Improve engagement
+        goals.append({
+            'category': 'HR',
+            'metric_key': 'employee_engagement_score',
+            'name': 'Employee Engagement',
+            'description': 'Improve employee engagement',
+            'current': current,
+            'target': target,
+            'unit': '%',
+            'icon': '👥',
+            'priority': 'medium'
+        })
+
+    return goals
+
+
+def calculate_goal_progress(goals: List[Dict], current_metrics: Dict) -> List[Dict]:
+    """Calculate progress toward each goal based on current metrics"""
+    progress_list = []
+
+    for goal in goals:
+        metric_key = goal['metric_key']
+        if metric_key in current_metrics:
+            current_value = current_metrics[metric_key]['value']
+            start_value = goal['current']
+            target_value = goal['target']
+
+            lower_is_better = goal.get('lower_is_better', False)
+
+            if lower_is_better:
+                # For metrics where lower is better (churn, risks)
+                total_improvement_needed = start_value - target_value
+                actual_improvement = start_value - current_value
+            else:
+                # For metrics where higher is better
+                total_improvement_needed = target_value - start_value
+                actual_improvement = current_value - start_value
+
+            if total_improvement_needed != 0:
+                progress_pct = min(100, max(0, (actual_improvement / total_improvement_needed) * 100))
+            else:
+                progress_pct = 100 if actual_improvement >= 0 else 0
+
+            achieved = progress_pct >= 100
+
+            progress_list.append({
+                **goal,
+                'current_value': current_value,
+                'progress_pct': progress_pct,
+                'achieved': achieved
+            })
+
+    return progress_list
+
+
 def get_time_pressure_minutes(time_pressure: str) -> int:
     """Get the time limit in minutes based on time pressure setting"""
     return TIME_PRESSURE_MINUTES.get(time_pressure, 10)
@@ -1345,6 +1546,7 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
     current_dissenter_key = f"current_dissenter_{round_num}"
     debate_history_key = f"debate_history_{round_num}"
     force_key = f"force_submitted_{round_num}"
+    pending_decision_key = f"pending_decision_{round_num}"
 
     # Initialize deliberation state if needed
     if delib_phase_key not in st.session_state:
@@ -1459,12 +1661,31 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Show counter opinion
-                st.error(f"**Counter-opinion:** {stance['counter_opinion']}")
-
                 # Debate exchanges for this member
                 exchanges = stance.get('debate_exchanges', 0)
                 max_exchanges = 3
+
+                # Show debate history if there have been previous exchanges
+                if exchanges > 0:
+                    st.markdown("##### 📜 Debate History")
+                    member_history = [
+                        h for h in st.session_state.get(debate_history_key, [])
+                        if h.get('dissenter_name') == name
+                    ]
+                    for i, hist in enumerate(member_history, 1):
+                        with st.container():
+                            st.markdown(f"**Exchange {i}:**")
+                            st.info(f"🎯 **{name}:** {hist.get('dissenter_argument', '')[:300]}...")
+                            st.success(f"💬 **Your response:** {hist.get('player_response', '')[:300]}...")
+                            if hist.get('llm_evaluation'):
+                                st.caption(f"📊 Evaluation: {hist.get('llm_evaluation', '')[:200]}...")
+                    st.markdown("---")
+
+                # Show current counter opinion (updated after each exchange)
+                if exchanges > 0:
+                    st.error(f"**{name}'s Response:** {stance['counter_opinion']}")
+                else:
+                    st.error(f"**Counter-opinion:** {stance['counter_opinion']}")
 
                 if exchanges < max_exchanges:
                     st.markdown(f"#### 💬 Debate with {name} (Exchange {exchanges + 1} of {max_exchanges})")
@@ -1520,8 +1741,8 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
                                         # Store original counter opinion before updating
                                         st.session_state[stances_key][name]['original_counter_opinion'] = stance['counter_opinion']
                                         st.session_state[stances_key][name]['convinced_in_round'] = exchanges + 1
-                                        # Move to next dissenter
-                                        st.session_state[current_dissenter_key] = current_idx + 1
+                                        # DON'T increment index - convinced member is removed from opposing list
+                                        # so the next member will naturally become the current index
                                     else:
                                         # Update counter_opinion for next exchange
                                         st.session_state[stances_key][name]['counter_opinion'] = result['follow_up']
@@ -1556,33 +1777,100 @@ def display_deliberation_phase(llm: genai.GenerativeModel, data: Dict,
             # All resolved
             if len(opposing) == 0:
                 st.success("✅ All board members support your decision!")
+                if st.button("✓ Proceed with Decision", key=f"proceed_{round_num}", type="primary",
+                            use_container_width=True):
+                    logger.debug("Proceed with Decision clicked - no opposition")
+                    st.session_state[delib_phase_key] = 'resolved'
+                    st.rerun()
             else:
                 remaining_opposed = sum(1 for n, s in member_stances.items()
                                        if s['stance'] == 'OPPOSE' and s.get('convinced_in_round') is None)
                 if remaining_opposed > 0:
                     st.warning(f"⚠️ {remaining_opposed} board member(s) still oppose after debate.")
+
+                    # Offer option to revise the decision
+                    col_proceed, col_revise = st.columns(2)
+                    with col_proceed:
+                        if st.button("✓ Proceed Anyway", key=f"proceed_{round_num}", type="primary",
+                                    use_container_width=True):
+                            logger.debug("Proceed with Decision clicked despite opposition")
+                            st.session_state[delib_phase_key] = 'resolved'
+                            st.rerun()
+                    with col_revise:
+                        if st.button("✏️ Revise Decision", key=f"revise_{round_num}",
+                                    help="Go back and modify your decision based on board feedback",
+                                    use_container_width=True):
+                            logger.debug("Revise Decision clicked")
+                            # Clear deliberation state to allow re-submission
+                            if pending_decision_key in st.session_state:
+                                del st.session_state[pending_decision_key]
+                            if delib_phase_key in st.session_state:
+                                del st.session_state[delib_phase_key]
+                            if stances_key in st.session_state:
+                                del st.session_state[stances_key]
+                            if current_dissenter_key in st.session_state:
+                                del st.session_state[current_dissenter_key]
+                            if debate_history_key in st.session_state:
+                                del st.session_state[debate_history_key]
+                            st.rerun()
                 else:
                     st.success("✅ All dissenters have been convinced!")
-
-            if st.button("✓ Proceed with Decision", key=f"proceed_{round_num}", type="primary",
-                        use_container_width=True):
-                logger.debug("Proceed with Decision clicked")
-                st.session_state[delib_phase_key] = 'resolved'
-                st.rerun()
+                    if st.button("✓ Proceed with Decision", key=f"proceed_{round_num}", type="primary",
+                                use_container_width=True):
+                        logger.debug("Proceed with Decision clicked")
+                        st.session_state[delib_phase_key] = 'resolved'
+                        st.rerun()
         else:
             # Still have dissenters to address
             remaining = len(opposing) - st.session_state.get(current_dissenter_key, 0)
             st.info(f"📋 {remaining} dissenter(s) remaining to address.")
 
-        # Force submit option (always available)
-        st.markdown("---")
-        if st.button("⚡ Force Submit Decision", key=f"force_submit_{round_num}",
-                    help="Submit without full board approval (scoring penalty applies)",
-                    use_container_width=True):
-            logger.debug("Force Submit clicked")
-            st.session_state[force_key] = True
-            st.session_state[delib_phase_key] = 'resolved'
-            st.rerun()
+        # Check if there's any remaining opposition
+        remaining_opposed_check = sum(1 for n, s in member_stances.items()
+                                      if s['stance'] == 'OPPOSE' and s.get('convinced_in_round') is None)
+
+        # Only show Force Submit and Revise options when there's opposition or dissenters to address
+        # Don't show these when all board members support the decision
+        has_opposition = remaining_opposed_check > 0 or not all_addressed
+
+        if has_opposition:
+            st.markdown("---")
+            # Show revise here only when not already shown above (i.e., when still addressing dissenters)
+            show_revise_here = not (all_addressed and remaining_opposed_check > 0)
+
+            if show_revise_here:
+                col_force, col_revise_alt = st.columns(2)
+            else:
+                col_force = st.container()
+                col_revise_alt = None
+
+            with col_force:
+                if st.button("⚡ Force Submit", key=f"force_submit_{round_num}",
+                            help="Submit without full board approval (scoring penalty applies)",
+                            use_container_width=True):
+                    logger.debug("Force Submit clicked")
+                    st.session_state[force_key] = True
+                    st.session_state[delib_phase_key] = 'resolved'
+                    st.rerun()
+
+            if show_revise_here and col_revise_alt:
+                with col_revise_alt:
+                    if st.button("✏️ Revise Decision", key=f"revise_alt_{round_num}",
+                                help="Go back and modify your decision based on board feedback",
+                                use_container_width=True):
+                        logger.debug("Revise Decision (alt) clicked")
+                        # Clear deliberation state to allow re-submission
+                        if pending_decision_key in st.session_state:
+                            del st.session_state[pending_decision_key]
+                        if delib_phase_key in st.session_state:
+                            del st.session_state[delib_phase_key]
+                        if stances_key in st.session_state:
+                            del st.session_state[stances_key]
+                        if current_dissenter_key in st.session_state:
+                            del st.session_state[current_dissenter_key]
+                        if debate_history_key in st.session_state:
+                            del st.session_state[debate_history_key]
+                        st.rerun()
 
     # Check if deliberation is complete
     is_resolved = st.session_state.get(delib_phase_key) == 'resolved'
@@ -2088,16 +2376,42 @@ def run_simulation_round(llm: genai.GenerativeModel, data: Dict,
             st.markdown("#### 📚 Key Learning Points")
             st.info(evaluation['learning_points'])
 
-        # Best Approach - What should have been done
+        # Best Approach - What should have been done (more prominent for poor scores)
         if evaluation.get('best_approach'):
-            with st.expander("💡 Recommended Best Approach", expanded=False):
+            expanded = score < 60  # Expand for poor scores so they see what they should have done
+            with st.expander("💡 Recommended Best Approach" + (" - PLEASE REVIEW" if score < 60 else ""), expanded=expanded):
                 st.markdown(evaluation['best_approach'])
 
-        # Encouragement
-        if evaluation.get('encouragement'):
+        # Critical Feedback for poor scores
+        if score < 60 and evaluation.get('critical_feedback'):
             st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); padding: 1rem; border-radius: 10px; margin-top: 1rem;">
-                <strong>💪 {evaluation['encouragement']}</strong>
+            <div style="background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%); padding: 1rem; border-radius: 10px; margin-top: 1rem; border-left: 4px solid #dc3545;">
+                <strong>⚠️ Critical Issues with Your Decision:</strong><br>
+                {evaluation['critical_feedback']}
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Conditional feedback based on score
+        if score >= 70:
+            # Good performance - show encouragement
+            if evaluation.get('encouragement'):
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); padding: 1rem; border-radius: 10px; margin-top: 1rem; border-left: 4px solid #28a745;">
+                    <strong>✅ {evaluation['encouragement']}</strong>
+                </div>
+                """, unsafe_allow_html=True)
+        elif score >= 50:
+            # Average performance - neutral guidance
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%); padding: 1rem; border-radius: 10px; margin-top: 1rem; border-left: 4px solid #ffc107;">
+                <strong>📝 Room for Improvement:</strong> Review the best approach above and consider how you could apply these principles in similar scenarios.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            # Poor performance - direct guidance
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%); padding: 1rem; border-radius: 10px; margin-top: 1rem; border-left: 4px solid #dc3545;">
+                <strong>📖 Action Required:</strong> This decision did not meet governance standards. Please carefully review the "Recommended Best Approach" section to understand what should have been done differently.
             </div>
             """, unsafe_allow_html=True)
 
@@ -2413,6 +2727,72 @@ def display_final_summary(data: Dict):
     </div>
     """, unsafe_allow_html=True)
 
+    # ===== GOAL ACHIEVEMENT SECTION =====
+    if 'game_goals' in st.session_state:
+        st.markdown("### 🎯 Mission Objectives - Final Results")
+
+        goal_progress = calculate_goal_progress(st.session_state.game_goals, final_metrics)
+        achieved_count = sum(1 for g in goal_progress if g.get('achieved', False))
+        total_goals = len(goal_progress)
+
+        # Achievement summary
+        achievement_pct = (achieved_count / total_goals * 100) if total_goals > 0 else 0
+
+        if achievement_pct >= 80:
+            achievement_color = "#28a745"
+            achievement_msg = "Outstanding! You exceeded expectations!"
+        elif achievement_pct >= 50:
+            achievement_color = "#ffc107"
+            achievement_msg = "Good progress! Some goals need more attention."
+        else:
+            achievement_color = "#dc3545"
+            achievement_msg = "Keep practicing! Many goals were not achieved."
+
+        st.markdown(f"""
+        <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 10px; margin-bottom: 1rem; border: 2px solid {achievement_color};">
+            <h2 style="color: {achievement_color}; margin: 0;">{achieved_count}/{total_goals} Goals Achieved</h2>
+            <p style="color: #666; margin: 0.5rem 0 0 0;">{achievement_msg}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Goal details in grid
+        goal_cols = st.columns(3)
+        for idx, goal in enumerate(goal_progress):
+            with goal_cols[idx % 3]:
+                achieved = goal.get('achieved', False)
+                progress = goal.get('progress_pct', 0)
+                current_val = goal.get('current_value', goal['current'])
+                start_val = goal['current']
+                target_val = goal['target']
+                unit = goal['unit']
+
+                if achieved:
+                    status_icon = "✅"
+                    bg_color = "#d4edda"
+                    border_color = "#28a745"
+                elif progress >= 50:
+                    status_icon = "🔶"
+                    bg_color = "#fff3cd"
+                    border_color = "#ffc107"
+                else:
+                    status_icon = "❌"
+                    bg_color = "#f8d7da"
+                    border_color = "#dc3545"
+
+                st.markdown(f"""
+                <div style="background: {bg_color}; padding: 0.8rem; border-radius: 8px; border-left: 4px solid {border_color}; margin-bottom: 0.5rem;">
+                    <div style="font-weight: 600;">{status_icon} {goal['name']}</div>
+                    <div style="font-size: 0.85rem; color: #666; margin: 0.3rem 0;">
+                        Start: {start_val}{unit} → Final: {current_val}{unit}
+                    </div>
+                    <div style="font-size: 0.85rem;">
+                        Target: <strong>{target_val}{unit}</strong> | Progress: <strong>{progress:.0f}%</strong>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
     # Score breakdown
     col1, col2, col3, col4 = st.columns(4)
 
@@ -2538,18 +2918,38 @@ def display_final_summary(data: Dict):
                         else:
                             st.markdown("➡️ No change")
 
-    # Performance assessment
-    if avg_score >= 80:
+    # Performance assessment - be honest based on actual scores and metrics
+    metrics_worse = grade_info['metrics_declined'] > grade_info['metrics_improved']
+
+    if avg_score >= 80 and not metrics_worse:
         performance = "Excellent! You demonstrated strong understanding of corporate governance and made decisions that positively impacted the business."
+        assessment_color = "#d4edda"
+        assessment_border = "#28a745"
+    elif avg_score >= 70 and not metrics_worse:
+        performance = "Good performance. You showed solid governance understanding with room for improvement in some areas."
+        assessment_color = "#d4edda"
+        assessment_border = "#28a745"
     elif avg_score >= 60:
-        performance = "Good performance! You have a solid grasp of board dynamics. Focus on understanding the broader business impact of your decisions."
+        performance = "Adequate performance. Your decisions showed basic understanding but missed important considerations. Review the best approaches for each round."
+        assessment_color = "#fff3cd"
+        assessment_border = "#ffc107"
+    elif avg_score >= 45:
+        performance = "Below average performance. Many of your decisions did not align with governance best practices. Significant improvement is needed. Carefully review the recommended approaches for each scenario."
+        assessment_color = "#f8d7da"
+        assessment_border = "#dc3545"
     else:
-        performance = "Keep learning! Review the module materials to strengthen your understanding. Consider how decisions affect multiple stakeholders and metrics."
+        performance = "Poor performance. Your decisions showed fundamental gaps in governance understanding and may have harmed stakeholders. You should revisit the module materials and understand the core principles before proceeding."
+        assessment_color = "#f8d7da"
+        assessment_border = "#dc3545"
+
+    # Add metrics context
+    if metrics_worse and avg_score < 70:
+        performance += f" Additionally, your decisions resulted in more metrics declining ({grade_info['metrics_declined']}) than improving ({grade_info['metrics_improved']}), indicating negative business impact."
 
     st.markdown(f"""
-    <div class="info-box">
-        <h3>Performance Assessment</h3>
-        <p>{performance}</p>
+    <div style="background: {assessment_color}; padding: 1rem; border-radius: 10px; border-left: 4px solid {assessment_border}; margin: 1rem 0;">
+        <h3 style="margin-top: 0;">Performance Assessment</h3>
+        <p style="margin-bottom: 0;">{performance}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2673,51 +3073,127 @@ def main():
     st.markdown('<h1 class="main-header">🏢 Board Room Simulation</h1>', unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; color: #666;">Corporate Governance Training & Decision Making</p>', unsafe_allow_html=True)
 
-    # Sidebar configuration
+    # Load API key from Streamlit secrets (hidden from user)
+    if "GEMINI_API_KEY" in st.secrets:
+        st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
+
+    # Auto-select simulation file (hidden from user)
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    json_files = [f for f in os.listdir(app_dir) if f.endswith('.json')]
+
+    if json_files:
+        # Auto-select first file if not already selected
+        if 'selected_file' not in st.session_state or not st.session_state.selected_file:
+            st.session_state.selected_file = os.path.join(app_dir, json_files[0])
+    else:
+        st.session_state.selected_file = None
+
+    # Sidebar - Player Information Only
     with st.sidebar:
-        st.header("⚙️ Configuration")
-
-        # Load API key from Streamlit secrets
-        if "GEMINI_API_KEY" in st.secrets:
-            st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
-
-        st.markdown("---")
-
-        # File selection - use the directory where app.py is located
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        json_files = [f for f in os.listdir(app_dir) if f.endswith('.json')]
-
-        if json_files:
-            selected_file = st.selectbox(
-                "Select Simulation File",
-                json_files
-            )
-            st.session_state.selected_file = os.path.join(app_dir, selected_file)
-        else:
-            st.warning("No JSON files found in the directory.")
-            st.session_state.selected_file = None
-
-        st.markdown("---")
+        st.header("🎮 Game Info")
 
         # Display current role if selected
         if st.session_state.get('player_role'):
-            st.markdown("**Your Role:**")
             role = st.session_state.player_role
-            st.info(f"{role['name']}\n{role['role']}")
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); padding: 1rem; border-radius: 10px; border-left: 4px solid #28a745;">
+                <strong>👤 Your Role</strong><br>
+                <span style="font-size: 1.1rem; font-weight: 600;">{role['name']}</span><br>
+                <span style="color: #666;">{role['role']}</span>
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown("---")
-
-        # Simulation controls
-        if st.button("🔄 Reset Simulation"):
-            for key in list(st.session_state.keys()):
-                if key not in ['api_key', 'selected_file']:
-                    del st.session_state[key]
-            st.rerun()
+        # Reset button - smaller, at bottom with expander
+        with st.expander("⚙️ Options", expanded=False):
+            if st.button("🔄 Restart Simulation", use_container_width=True):
+                for key in list(st.session_state.keys()):
+                    if key not in ['api_key', 'selected_file']:
+                        del st.session_state[key]
+                st.rerun()
 
     # Function to display metrics in sidebar during simulation
     def display_sidebar_metrics(company_data: Dict, impact_reasons: Dict = None):
         """Display company metrics in sidebar during simulation"""
         with st.sidebar:
+            st.markdown("---")
+
+            # COMPANY BRIEF SECTION - Always accessible
+            with st.expander("📋 Company & Situation Brief", expanded=False):
+                # Company name and industry
+                st.markdown(f"**{company_data.get('company_name', 'Company')}**")
+                st.caption(f"Industry: {company_data.get('industry', 'N/A')} | Founded: {company_data.get('founded', 'N/A')}")
+
+                # Company overview (abbreviated)
+                overview = company_data.get('company_overview', '')
+                if len(overview) > 300:
+                    st.markdown(f"{overview[:300]}...")
+                else:
+                    st.markdown(overview)
+
+                st.markdown("---")
+
+                # Current challenges
+                st.markdown("**⚠️ Key Challenges:**")
+                problems = company_data.get('current_problems', [])
+                for problem in problems[:5]:  # Show first 5 challenges
+                    st.markdown(f"• {problem[:100]}{'...' if len(problem) > 100 else ''}")
+
+                st.markdown("---")
+
+                # Initial scenario
+                st.markdown("**📌 Initial Situation:**")
+                initial_scenario = company_data.get('initial_scenario', '')
+                if len(initial_scenario) > 400:
+                    st.markdown(f"{initial_scenario[:400]}...")
+                else:
+                    st.markdown(initial_scenario)
+
+            # GOAL PROGRESS SECTION
+            if 'game_goals' in st.session_state:
+                st.markdown("---")
+                st.header("🎯 Goal Progress")
+
+                current_metrics = st.session_state.get('current_metrics', company_data['metrics'])
+                goal_progress = calculate_goal_progress(st.session_state.game_goals, current_metrics)
+
+                achieved_count = sum(1 for g in goal_progress if g.get('achieved', False))
+                total_goals = len(goal_progress)
+
+                # Overall progress summary
+                st.markdown(f"**{achieved_count}/{total_goals}** goals achieved")
+
+                # Progress bars for each goal
+                for goal in goal_progress[:4]:  # Show top 4 goals in sidebar
+                    progress = goal.get('progress_pct', 0)
+                    achieved = goal.get('achieved', False)
+
+                    # Color based on progress
+                    if achieved:
+                        color = "#28a745"
+                        status_icon = "✅"
+                    elif progress >= 50:
+                        color = "#ffc107"
+                        status_icon = "🔄"
+                    else:
+                        color = "#dc3545"
+                        status_icon = "⏳"
+
+                    current_val = goal.get('current_value', goal['current'])
+                    target_val = goal['target']
+                    unit = goal['unit']
+
+                    st.markdown(f"""
+                    <div style="margin-bottom: 0.8rem;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                            <span>{status_icon} {goal['name']}</span>
+                            <span>{current_val}{unit} / {target_val}{unit}</span>
+                        </div>
+                        <div style="background: #e9ecef; border-radius: 4px; height: 8px; margin-top: 4px;">
+                            <div style="background: {color}; width: {min(progress, 100)}%; height: 100%; border-radius: 4px;"></div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
             st.markdown("---")
 
             # Get current metrics (may be updated from session state)
@@ -2878,33 +3354,112 @@ def main():
 
     # Main content area
     if not st.session_state.get('player_role'):
-        # Phase 1: Show all business details, metrics, and module information first
-        st.markdown("### 📊 Step 1: Review Business Details")
-        st.markdown("Review the company information, current challenges, and module details before selecting your role.")
+        # ===== INITIAL DASHBOARD - Clean & Structured =====
+
+        # Header with simulation title
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1E3A5F 0%, #2d5a8a 100%); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; color: white;">
+            <h2 style="margin: 0; color: white;">Welcome to {company_data['company_name']} Board Simulation</h2>
+            <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">{module_data['module_name']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Generate and store game goals
+        game_goals = generate_game_goals(company_data['metrics'], simulation_config['total_rounds'])
+        st.session_state.game_goals = game_goals
+
+        # ===== MISSION OBJECTIVES SECTION =====
+        st.markdown("### 🎯 Your Mission Objectives")
+        st.markdown(f"*Complete {simulation_config['total_rounds']} rounds of board decisions to achieve these targets:*")
+
+        # Display goals in a grid
+        goal_cols = st.columns(3)
+        for idx, goal in enumerate(game_goals[:6]):  # Show up to 6 goals
+            with goal_cols[idx % 3]:
+                lower_better = goal.get('lower_is_better', False)
+                arrow = "↓" if lower_better else "↑"
+                current_display = f"{goal['current']}{goal['unit']}"
+                target_display = f"{goal['target']}{goal['unit']}"
+
+                priority_color = "#dc3545" if goal['priority'] == 'high' else "#ffc107"
+
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 1rem; border-radius: 10px; border-top: 3px solid {priority_color}; margin-bottom: 0.5rem; text-align: center;">
+                    <div style="font-size: 1.5rem;">{goal['icon']}</div>
+                    <div style="font-weight: 600; color: #1E3A5F;">{goal['name']}</div>
+                    <div style="font-size: 0.85rem; color: #666; margin: 0.3rem 0;">{goal['description']}</div>
+                    <div style="margin-top: 0.5rem;">
+                        <span style="color: #666;">Current: {current_display}</span>
+                        <span style="font-size: 1.2rem; margin: 0 0.5rem;">{arrow}</span>
+                        <span style="color: {priority_color}; font-weight: 600;">Target: {target_display}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # Company Overview
-        st.markdown("### 🏢 Company Overview")
-        display_company_dashboard(company_data)
+        # Two-column layout for company info and scenario
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
+            # 1. COMPANY BRIEF
+            st.markdown("### 🏢 Company Brief")
+            st.markdown(f"""
+            <div style="background: #f8f9fa; padding: 1rem; border-radius: 10px; border-left: 4px solid #1E3A5F;">
+                <strong>{company_data['company_name']}</strong><br>
+                <span style="color: #666;">Industry: {company_data.get('industry', 'Technology')} | Founded: {company_data.get('founded', 'N/A')}</span>
+                <p style="margin-top: 0.8rem;">{company_data.get('company_overview', '')[:500]}{'...' if len(company_data.get('company_overview', '')) > 500 else ''}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Key Metrics Summary
+            st.markdown("#### 📊 Key Metrics")
+            metrics = company_data['metrics']
+            metric_col1, metric_col2 = st.columns(2)
+            with metric_col1:
+                st.metric("Revenue", f"₹{metrics['total_revenue_annual']['value']} Cr", f"+{metrics['revenue_growth_yoy']['value']}% YoY")
+                st.metric("Employees", f"{metrics['employee_count']['value']:,}")
+            with metric_col2:
+                st.metric("Net Profit Margin", f"{metrics['net_profit_margin']['value']}%")
+                st.metric("NPS Score", f"{metrics['net_promoter_score']['value']}")
+
+        with col_right:
+            # 2. SCENARIO DESCRIPTION
+            st.markdown("### 📋 Initial Scenario")
+            st.markdown(f"""
+            <div style="background: #fff3cd; padding: 1rem; border-radius: 10px; border-left: 4px solid #ffc107;">
+                {company_data.get('initial_scenario', 'Scenario not available')[:600]}{'...' if len(company_data.get('initial_scenario', '')) > 600 else ''}
+            </div>
+            """, unsafe_allow_html=True)
+
+            # 3. CHALLENGES
+            st.markdown("### ⚠️ Current Challenges")
+            challenges_html = ""
+            for problem in company_data.get('current_problems', [])[:5]:
+                challenges_html += f'<div style="background: #f8d7da; padding: 0.6rem; border-radius: 6px; margin: 0.3rem 0; border-left: 3px solid #dc3545; font-size: 0.9rem;">• {problem[:120]}{"..." if len(problem) > 120 else ""}</div>'
+            st.markdown(challenges_html, unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # Current Problems/Challenges
-        st.markdown("### ⚠️ Current Challenges")
-        display_current_problems(company_data['current_problems'])
+        # 4. LEARNING OBJECTIVES
+        st.markdown("### 🎯 Learning Objectives")
+        st.markdown(f"*{module_data.get('overview', '')}*")
+
+        obj_cols = st.columns(3)
+        objectives = module_data.get('learning_objectives', [])
+        for idx, obj in enumerate(objectives[:6]):  # Show up to 6 objectives
+            with obj_cols[idx % 3]:
+                st.markdown(f"""
+                <div style="background: #d4edda; padding: 0.8rem; border-radius: 8px; margin: 0.3rem 0; border-left: 3px solid #28a745; font-size: 0.85rem;">
+                    ✓ {obj}
+                </div>
+                """, unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # Module Information
-        st.markdown("### 📚 Module Information")
-        display_module_info(module_data)
-
-        st.markdown("---")
-
-        # Phase 2: Role selection after reviewing all details
-        st.markdown("### 👤 Step 2: Choose Your Role")
-        st.markdown("Now that you've reviewed the business context, select which board member you want to play as during this simulation.")
+        # 5. ROLE SELECTION
+        st.markdown("### 👤 Choose Your Board Role")
+        st.markdown("Select which board member you want to play as during this simulation:")
 
         selected_role = display_board_members_for_selection(company_data['board_members'])
 
