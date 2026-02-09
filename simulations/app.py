@@ -745,11 +745,12 @@ def apply_metric_impacts(metrics: Dict, impacts: Dict) -> Dict:
             new_value = old_value + change
 
             # Apply bounds based on metric type
-            if metric['unit'] == '%':
+            unit = metric.get('unit', '')
+            if unit == '%':
                 new_value = max(0, min(100, new_value))
-            elif metric['unit'] == 'count':
+            elif unit in ('count', 'employees'):
                 new_value = max(0, int(new_value))
-            elif 'Cr' in metric['unit'] or 'L' in metric['unit']:
+            elif isinstance(new_value, float):
                 new_value = max(0, round(new_value, 1))
 
             updated_metrics[key]['value'] = new_value
@@ -1186,73 +1187,35 @@ def display_company_dashboard(company_data: Dict):
     """Display company metrics dashboard"""
     st.subheader(f"📊 {company_data['company_name']} Dashboard")
 
-    # Key metrics in columns
     metrics = company_data['metrics']
 
-    col1, col2, col3, col4 = st.columns(4)
+    # Display high priority metrics first, then others
+    high_priority = {k: v for k, v in metrics.items() if v.get('priority') in ['High', 'high']}
+    other_metrics = {k: v for k, v in metrics.items() if v.get('priority') not in ['High', 'high']}
 
-    with col1:
-        st.metric(
-            "Annual Revenue",
-            f"₹{metrics['total_revenue_annual']['value']} Cr",
-            f"+{metrics['revenue_growth_yoy']['value']}% YoY"
-        )
+    if high_priority:
+        st.markdown("**High Priority Metrics:**")
+        cols = st.columns(min(len(high_priority), 4))
+        for idx, (key, metric) in enumerate(high_priority.items()):
+            with cols[idx % min(len(high_priority), 4)]:
+                change = metric.get('change', 0)
+                delta_str = f"{change:+.1f}" if change != 0 else None
+                st.metric(metric['description'], f"{metric['value']} {metric['unit']}", delta=delta_str)
 
-    with col2:
-        st.metric(
-            "EBITDA",
-            f"₹{metrics['ebitda']['value']} Cr",
-            delta_color="normal"
-        )
-
-    with col3:
-        st.metric(
-            "Net Profit Margin",
-            f"{metrics['net_profit_margin']['value']}%"
-        )
-
-    with col4:
-        st.metric(
-            "Employees",
-            f"{metrics['employee_count']['value']:,}"
-        )
-
-    # Second row of metrics
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric(
-            "Platform Uptime",
-            f"{metrics['platform_uptime']['value']}%"
-        )
-
-    with col2:
-        st.metric(
-            "NPS Score",
-            f"{metrics['net_promoter_score']['value']}"
-        )
-
-    with col3:
-        st.metric(
-            "Customer Churn",
-            f"{metrics['customer_churn_rate_annual']['value']}%"
-        )
-
-    with col4:
-        high_risks = metrics['open_high_severity_risks']['value']
-        st.metric(
-            "High-Severity Risks",
-            f"{high_risks}",
-            delta=f"{high_risks} open" if high_risks > 0 else "All clear",
-            delta_color="inverse" if high_risks > 0 else "normal"
-        )
+    if other_metrics:
+        cols = st.columns(4)
+        for idx, (key, metric) in enumerate(other_metrics.items()):
+            with cols[idx % 4]:
+                change = metric.get('change', 0)
+                delta_str = f"{change:+.1f}" if change != 0 else None
+                st.metric(metric['description'], f"{metric['value']} {metric['unit']}", delta=delta_str)
 
     # Expandable section for all metrics
     with st.expander("📈 View All Metrics"):
         metric_cols = st.columns(3)
         for idx, (key, metric) in enumerate(metrics.items()):
             with metric_cols[idx % 3]:
-                priority_badge = "🔴 " if metric.get('priority') == 'High' else ""
+                priority_badge = "🔴 " if metric.get('priority') in ['High', 'high'] else ""
                 st.markdown(f"""
                 **{priority_badge}{metric['description']}**
                 `{metric['value']} {metric['unit']}`
@@ -3102,8 +3065,91 @@ def display_final_summary(data: Dict):
         st.rerun()
 
 
-def main():
-    """Main application entry point"""
+def get_data_dir() -> str:
+    """Get the data directory path"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
+def get_available_simulations() -> List[Dict]:
+    """Scan data/ folder and return list of available simulations with metadata"""
+    data_dir = get_data_dir()
+    simulations = []
+    if not os.path.isdir(data_dir):
+        return simulations
+    for filename in sorted(os.listdir(data_dir)):
+        if not filename.endswith('.json'):
+            continue
+        filepath = os.path.join(data_dir, filename)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            company = data.get('company_data', {})
+            module = data.get('module_data', {})
+            simulations.append({
+                'filename': filename,
+                'filepath': filepath,
+                'session_name': data.get('session_name', filename),
+                'company_name': company.get('company_name', 'Unknown Company'),
+                'company_overview': company.get('company_overview', ''),
+                'industry': company.get('industry', 'N/A'),
+                'module_name': module.get('module_name', 'N/A'),
+                'board_count': len(company.get('board_members', [])),
+                'created_at': data.get('created_at', ''),
+            })
+        except Exception:
+            continue
+    return simulations
+
+
+def home_page():
+    """Home page listing all available simulations"""
+    st.markdown('<h1 class="main-header">🏢 Board Room Simulations</h1>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center; color: #666;">Corporate Governance Training & Decision Making</p>', unsafe_allow_html=True)
+
+    simulations = get_available_simulations()
+
+    if not simulations:
+        st.warning("No simulation files found. Place JSON files in the `data/` folder.")
+        return
+
+    st.markdown(f"### Available Simulations ({len(simulations)})")
+    st.markdown("---")
+
+    for idx, sim in enumerate(simulations):
+        with st.container():
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 1.2rem; border-radius: 12px; border-left: 5px solid #1E3A5F; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; color: #1E3A5F;">{sim['company_name']}</h3>
+                    <p style="margin: 0.3rem 0; color: #555; font-size: 0.9rem;"><strong>Module:</strong> {sim['module_name']}</p>
+                    <p style="margin: 0.3rem 0; color: #555; font-size: 0.9rem;"><strong>Industry:</strong> {sim['industry']} | <strong>Board Members:</strong> {sim['board_count']}</p>
+                    <p style="margin: 0.5rem 0 0 0; color: #777; font-size: 0.85rem;">{sim['company_overview'][:200]}...</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with col2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button(f"▶️ Launch Simulation", key=f"launch_{idx}", use_container_width=True):
+                    st.session_state.selected_sim_index = idx
+                    st.switch_page(st.session_state._sim_pages[idx])
+
+    st.markdown("---")
+    st.caption("Place additional simulation JSON files in the `data/` folder to see them here.")
+
+
+def simulation_page():
+    """Simulation page — runs the board room simulation for the selected JSON"""
+
+    # Determine which simulation to load
+    sim_index = st.session_state.get('selected_sim_index', None)
+    simulations = get_available_simulations()
+
+    if sim_index is None or sim_index >= len(simulations):
+        st.warning("No simulation selected. Please go back to the Home page.")
+        return
+
+    sim = simulations[sim_index]
+    st.session_state.selected_file = sim['filepath']
 
     # Title
     st.markdown('<h1 class="main-header">🏢 Board Room Simulation</h1>', unsafe_allow_html=True)
@@ -3112,17 +3158,6 @@ def main():
     # Load API key from Streamlit secrets (hidden from user)
     if "GEMINI_API_KEY" in st.secrets:
         st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
-
-    # Auto-select simulation file (hidden from user)
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    json_files = [f for f in os.listdir(app_dir) if f.endswith('.json')]
-
-    if json_files:
-        # Auto-select first file if not already selected
-        if 'selected_file' not in st.session_state or not st.session_state.selected_file:
-            st.session_state.selected_file = os.path.join(app_dir, json_files[0])
-    else:
-        st.session_state.selected_file = None
 
     # Sidebar - Player Information Only
     with st.sidebar:
@@ -3142,8 +3177,9 @@ def main():
         # Reset button - smaller, at bottom with expander
         with st.expander("⚙️ Options", expanded=False):
             if st.button("🔄 Restart Simulation", use_container_width=True):
+                preserve_keys = {'api_key', 'selected_file', 'selected_sim_index', '_sim_pages'}
                 for key in list(st.session_state.keys()):
-                    if key not in ['api_key', 'selected_file']:
+                    if key not in preserve_keys:
                         del st.session_state[key]
                 st.rerun()
 
@@ -3261,18 +3297,16 @@ def main():
             if impact_reasons is None:
                 impact_reasons = st.session_state.get('metric_impact_reasons', {})
 
-            # Helper function to display metric with change
-            def show_metric(key, label, format_str, suffix=""):
+            # Helper function to display metric with change (uses unit from data)
+            def show_metric(key):
                 if key in metrics:
                     metric = metrics[key]
                     value = metric['value']
+                    unit = metric.get('unit', '')
                     change = metric.get('change', 0)
 
-                    # Format the display value
-                    if isinstance(value, float):
-                        display_val = f"{format_str.format(value)}{suffix}"
-                    else:
-                        display_val = f"{value}{suffix}"
+                    # Format the display value using the unit from data
+                    display_val = f"{value} {unit}"
 
                     # Calculate delta string
                     delta_str = None
@@ -3285,61 +3319,53 @@ def main():
                     # Determine if this metric is "inverse" (lower is better)
                     inverse_metrics = ['customer_churn_rate_annual', 'annual_attrition_rate',
                                       'open_high_severity_risks', 'monthly_burn_rate',
-                                      'data_processing_latency', 'average_incident_resolution_time']
+                                      'data_processing_latency', 'average_incident_resolution_time',
+                                      'data_privacy_incident_count', 'customer_acquisition_cost']
 
                     delta_color = "inverse" if key in inverse_metrics else "normal"
 
-                    st.metric(label, display_val, delta=delta_str, delta_color=delta_color)
+                    st.metric(metric['description'], display_val, delta=delta_str, delta_color=delta_color)
 
                     # Show reason if available
                     if key in impact_reasons and impact_reasons[key]:
                         st.caption(f"↳ {impact_reasons[key]}")
 
-            # Key Financial Metrics
-            with st.expander("💰 Financial", expanded=True):
-                show_metric('total_revenue_annual', "Revenue", "₹{:.0f}", " Cr")
-                show_metric('annual_recurring_revenue', "ARR", "₹{:.0f}", " Cr")
-                show_metric('ebitda', "EBITDA", "₹{:.0f}", " Cr")
-                show_metric('net_profit_margin', "Net Profit Margin", "{:.1f}", "%")
-                show_metric('revenue_growth_yoy', "Revenue Growth YoY", "{:.1f}", "%")
-                show_metric('monthly_burn_rate', "Monthly Burn Rate", "₹{:.1f}", " Cr")
+            # Group metrics by category and display dynamically
+            metric_categories = {
+                '💰 Financial': ['total_revenue_annual', 'annual_recurring_revenue', 'ebitda',
+                                'net_profit_margin', 'revenue_growth_yoy', 'monthly_burn_rate'],
+                '👥 Customer': ['net_promoter_score', 'customer_churn_rate_annual',
+                               'customer_lifetime_value', 'customer_acquisition_cost',
+                               'average_contract_value', 'expansion_revenue_rate', 'support_ticket_csat'],
+                '⚙️ Operations': ['platform_uptime', 'deployment_frequency',
+                                 'average_incident_resolution_time', 'automation_coverage',
+                                 'infrastructure_cost_efficiency', 'data_processing_latency',
+                                 'project_delivery_on_time_rate'],
+                '👔 Human Resources': ['employee_count', 'employee_engagement_score',
+                                      'annual_attrition_rate', 'avg_training_hours_per_employee',
+                                      'internal_promotion_rate', 'diversity_ratio_women_percentage'],
+                '🛡️ Risk & Compliance': ['regulatory_compliance_score', 'open_high_severity_risks',
+                                         'data_privacy_incident_count', 'carbon_footprint_yoy_change',
+                                         'r_and_d_spend_percentage_of_revenue']
+            }
 
-            # Customer Metrics
-            with st.expander("👥 Customer", expanded=False):
-                show_metric('net_promoter_score', "NPS Score", "{:.0f}", "")
-                show_metric('customer_churn_rate_annual', "Customer Churn", "{:.1f}", "%")
-                show_metric('customer_lifetime_value', "CLV", "₹{:.1f}", " Cr")
-                show_metric('customer_acquisition_cost', "CAC", "₹{:.1f}", " L")
-                show_metric('average_contract_value', "Avg Contract Value", "₹{:.1f}", " Cr")
-                show_metric('expansion_revenue_rate', "Expansion Revenue", "{:.0f}", "%")
-                show_metric('support_ticket_csat', "Support CSAT", "{:.1f}", "/5")
+            for category, metric_keys in metric_categories.items():
+                # Only show category if it has metrics present in the data
+                present_keys = [k for k in metric_keys if k in metrics]
+                if present_keys:
+                    with st.expander(category, expanded=(category.startswith('💰'))):
+                        for key in present_keys:
+                            show_metric(key)
 
-            # Operational Metrics
-            with st.expander("⚙️ Operations", expanded=False):
-                show_metric('platform_uptime', "Platform Uptime", "{:.2f}", "%")
-                show_metric('deployment_frequency', "Deployment Freq", "{:.0f}", "/month")
-                show_metric('average_incident_resolution_time', "Incident Resolution", "{:.1f}", " hrs")
-                show_metric('automation_coverage', "Automation Coverage", "{:.0f}", "%")
-                show_metric('infrastructure_cost_efficiency', "Infra Cost Efficiency", "{:.0f}", "%")
-                show_metric('data_processing_latency', "Data Latency", "{:.0f}", " ms")
-                show_metric('project_delivery_on_time_rate', "On-Time Delivery", "{:.0f}", "%")
-
-            # HR Metrics
-            with st.expander("👔 Human Resources", expanded=False):
-                show_metric('employee_count', "Employees", "{:,.0f}", "")
-                show_metric('employee_engagement_score', "Engagement Score", "{:.0f}", "/100")
-                show_metric('annual_attrition_rate', "Attrition Rate", "{:.1f}", "%")
-                show_metric('avg_training_hours_per_employee', "Training Hours", "{:.0f}", " hrs")
-                show_metric('internal_promotion_rate', "Internal Promotion", "{:.0f}", "%")
-                show_metric('diversity_ratio_women_percentage', "Diversity (Women)", "{:.0f}", "%")
-
-            # Risk & Compliance
-            with st.expander("🛡️ Risk & Compliance", expanded=False):
-                show_metric('regulatory_compliance_score', "Compliance Score", "{:.0f}", "%")
-                show_metric('open_high_severity_risks', "High-Severity Risks", "{:.0f}", "")
-                show_metric('data_privacy_incident_count', "Privacy Incidents", "{:.0f}", "")
-                show_metric('carbon_footprint_yoy_change', "Carbon Footprint", "{:.0f}", "% YoY")
-                show_metric('r_and_d_spend_percentage_of_revenue', "R&D Spend", "{:.1f}", "%")
+            # Show any metrics not in predefined categories
+            all_categorized = set()
+            for keys in metric_categories.values():
+                all_categorized.update(keys)
+            uncategorized = [k for k in metrics.keys() if k not in all_categorized]
+            if uncategorized:
+                with st.expander("📋 Other Metrics", expanded=False):
+                    for key in uncategorized:
+                        show_metric(key)
 
     # Check prerequisites
     if not st.session_state.get('api_key'):
@@ -3447,15 +3473,22 @@ def main():
         # ===== 5. KEY METRICS =====
         st.markdown("### 📊 Key Metrics")
         metrics = company_data['metrics']
-        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-        with metric_col1:
-            st.metric("Revenue", f"₹{metrics['total_revenue_annual']['value']} Cr", f"+{metrics['revenue_growth_yoy']['value']}% YoY")
-        with metric_col2:
-            st.metric("Net Profit Margin", f"{metrics['net_profit_margin']['value']}%")
-        with metric_col3:
-            st.metric("Employees", f"{metrics['employee_count']['value']:,}")
-        with metric_col4:
-            st.metric("NPS Score", f"{metrics['net_promoter_score']['value']}")
+
+        # Filter metrics by priority (High first, then Medium)
+        key_metrics = {k: v for k, v in metrics.items()
+                       if v.get('priority') in ['High', 'high', 'Medium', 'medium']}
+
+        # If no priority-tagged metrics found, show all metrics
+        if not key_metrics:
+            key_metrics = metrics
+
+        key_metric_items = list(key_metrics.items())
+        num_cols = min(len(key_metric_items), 4)
+        if num_cols > 0:
+            metric_cols = st.columns(num_cols)
+            for idx, (key, metric) in enumerate(key_metric_items):
+                with metric_cols[idx % num_cols]:
+                    st.metric(metric['description'], f"{metric['value']} {metric['unit']}")
 
         st.markdown("---")
 
@@ -3556,21 +3589,89 @@ def main():
                 for term, definition in list(module_data['key_terms'].items())[:15]:
                     st.markdown(f"**{term}:** {definition}")
 
-        # Start simulation button
+        # Start simulation button with disclaimer
         st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🚀 Start Simulation", type="primary", use_container_width=True):
+
+        # Disclaimer dialog function
+        @st.dialog("📜 Simulation Rules & Guidelines", width="large")
+        def show_disclaimer_dialog():
+            total_rounds = simulation_config['total_rounds']
+
+            st.markdown(f"""
+            ### Welcome to the Boardroom Simulation!
+
+            Please read the following rules and guidelines carefully before proceeding.
+
+            ---
+
+            #### 🎮 How to Play
+            In this simulation, you will assume the role of a board member and navigate **{total_rounds} rounds** of
+            real-world boardroom scenarios. Each round presents a unique challenge that requires you to analyze the
+            situation, consult with fellow board members, and make a strategic decision.
+
+            ---
+
+            #### 📋 Round Structure
+            Each round follows this sequence:
+            1. **Read the Scenario** - Understand the challenge presented
+            2. **Consult** - Seek advice from board members or committees (limited per round)
+            3. **Make Your Decision** - Submit your chosen course of action with reasoning
+            4. **Board Deliberation** - Board members will react, and you may need to debate with dissenters
+            5. **Evaluation** - Your decision is scored and business metrics are updated
+
+            ---
+
+            #### 🔢 Limits Per Round
+            | Resource | Limit | Description |
+            |----------|-------|-------------|
+            | 👥 Director Consultation | **1 per round** | Consult one or more board members together |
+            | 🏛️ Committee Consultation | **1 per round** | Consult a board committee for collective advice |
+            | ✏️ Decision Revision | **1 per round** | Revise your decision if the board disagrees |
+            | 💬 Debate Exchanges | **3 per dissenter** | Convince opposing board members |
+
+            ---
+
+            #### ⏱️ Time Pressure
+            Each round has a countdown timer. The time limit varies by round difficulty:
+            - **Relaxed:** 15 minutes
+            - **Normal:** 10 minutes
+            - **Urgent:** 5 minutes
+
+            You can still submit after time expires, but it may affect your score.
+
+            ---
+
+            #### 📊 Scoring
+            Your performance is evaluated on three components:
+            - **Decision Quality (50%)** - How well your decision addresses the scenario
+            - **Business Impact (30%)** - How your decisions affect company metrics
+            - **Board Effectiveness (20%)** - How well you manage board dynamics and convince dissenters
+
+            ---
+
+            #### ⚠️ Important Notes
+            - **Force Submit** is available if you cannot convince all dissenters, but it carries a scoring penalty
+            - Consult strategically - choose members whose expertise is relevant to the scenario
+            - Your decisions have cumulative impact on company metrics across all rounds
+            - Review the Mission Objectives to understand your targets
+            """)
+
+            st.markdown("---")
+
+            if st.button("✅ I Understand, Let's Begin!", type="primary", use_container_width=True):
                 st.session_state.simulation_started = True
                 st.session_state.current_round = 0
                 st.session_state.total_score = 0
                 st.session_state.conversation_history = []
-                # Store INITIAL metrics (before simulation) for final comparison
                 st.session_state.initial_metrics = {k: v.copy() for k, v in company_data['metrics'].items()}
-                # Initialize current metrics with a deep copy
                 st.session_state.current_metrics = {k: v.copy() for k, v in company_data['metrics'].items()}
                 st.session_state.metric_impact_reasons = {}
                 st.rerun()
+
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🚀 Start Simulation", type="primary", use_container_width=True):
+                show_disclaimer_dialog()
 
     elif st.session_state.current_round >= simulation_config['total_rounds']:
         # Simulation complete - show metrics in sidebar with final impact reasons
@@ -3596,4 +3697,31 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Build pages dynamically from data/ folder
+    simulations = get_available_simulations()
+
+    # Always start with the Home page
+    pages = [st.Page(home_page, title="Home", icon="🏠", url_path="home")]
+
+    # Create one page per simulation JSON
+    sim_pages = []
+    for idx, sim in enumerate(simulations):
+        # Create a unique url_path from company name
+        url_slug = sim['company_name'].lower().replace(' ', '-').replace('.', '').replace(',', '')
+        url_slug = ''.join(c for c in url_slug if c.isalnum() or c == '-')
+
+        def make_sim_page(i=idx):
+            """Factory to capture loop variable"""
+            st.session_state.selected_sim_index = i
+            simulation_page()
+
+        page = st.Page(make_sim_page, title=sim['company_name'], icon="🏢", url_path=url_slug)
+        pages.append(page)
+        sim_pages.append(page)
+
+    # Store sim pages in session state so home_page can reference them for st.switch_page
+    st.session_state._sim_pages = sim_pages
+
+    # Run navigation
+    nav = st.navigation(pages)
+    nav.run()
