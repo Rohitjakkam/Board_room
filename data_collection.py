@@ -49,6 +49,74 @@ def ensure_list(data) -> List:
     return []
 
 
+def safe_float(value, default: float = 0.0) -> float:
+    """Safely convert a value to float, returning default if conversion fails.
+
+    Handles cases where data may contain non-numeric strings like '12-18', 'N/A', etc.
+    """
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Try to extract a number from the string
+        value = value.strip()
+        if not value:
+            return default
+        # Handle common non-numeric patterns
+        try:
+            return float(value)
+        except ValueError:
+            # Try to extract first number from string (e.g., "12-18" -> 12)
+            import re
+            match = re.search(r'-?\d+\.?\d*', value)
+            if match:
+                try:
+                    return float(match.group())
+                except ValueError:
+                    pass
+            return default
+    return default
+
+
+def safe_int(value, default: int = 0) -> int:
+    """Safely convert a value to int, returning default if conversion fails.
+
+    Handles cases where data may contain non-numeric strings like '12-18', 'N/A', etc.
+    """
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
+        try:
+            return int(float(value))
+        except ValueError:
+            # Try to extract first number from string
+            import re
+            match = re.search(r'-?\d+', value)
+            if match:
+                try:
+                    return int(match.group())
+                except ValueError:
+                    pass
+            return default
+    return default
+
+
+def safe_str(value, default: str = '') -> str:
+    """Safely convert a value to string, returning default if value is None or empty."""
+    if value is None:
+        return default
+    result = str(value).strip()
+    return result if result else default
+
+
 def ensure_data_dir():
     """Ensure the data directory exists"""
     if not os.path.exists(DATA_DIR):
@@ -758,7 +826,7 @@ def main():
                             with col1:
                                 new_val = st.number_input(
                                     "Value",
-                                    value=float(metric_info.get('value', 0) or 0),
+                                    value=safe_float(metric_info.get('value', 0), 0.0),
                                     key=f"val_{metric_safe_key}",
                                     label_visibility="collapsed"
                                 )
@@ -921,7 +989,7 @@ def main():
                             current_tenure = st.session_state.audit_data['company_data']['board_members'][i].get('tenure_years', 0)
                             new_tenure = st.number_input(
                                 "Tenure (years)",
-                                value=int(current_tenure),
+                                value=safe_int(current_tenure, 0),
                                 min_value=0,
                                 max_value=50,
                                 key=f"member_tenure_{i}"
@@ -1802,7 +1870,7 @@ def main():
                         "Total Rounds",
                         min_value=1,
                         max_value=20,
-                        value=config.get('total_rounds', 5),
+                        value=safe_int(config.get('total_rounds', 5), 5),
                         key="total_rounds_input",
                         help="Number of decision rounds in the simulation"
                     )
@@ -2116,9 +2184,9 @@ def main():
 
                     summary_data.append({
                         "Round": i + 1,
-                        "Type": f"{type_emoji} {(r.get('round_type') or 'both').title()}",
-                        "Difficulty": f"{diff_emoji} {(r.get('difficulty') or 'medium').title()}",
-                        "Time": f"{time_emoji} {(r.get('time_pressure') or 'normal').title()}",
+                        "Type": f"{type_emoji} {safe_str(r.get('round_type'), 'both').title()}",
+                        "Difficulty": f"{diff_emoji} {safe_str(r.get('difficulty'), 'medium').title()}",
+                        "Time": f"{time_emoji} {safe_str(r.get('time_pressure'), 'normal').title()}",
                         "Focus": focus_display
                     })
 
@@ -2229,8 +2297,8 @@ def main():
                             sim_config = final_data.get('simulation_config', {})
                             st.write(f"• Total Rounds: {sim_config.get('total_rounds', 0)}")
                             initial = sim_config.get('initial_setup', {})
-                            st.write(f"• Scenario: {initial.get('starting_scenario', 'N/A').title()}")
-                            st.write(f"• Initial Difficulty: {initial.get('initial_difficulty', 'N/A').title()}")
+                            st.write(f"• Scenario: {safe_str(initial.get('starting_scenario'), 'N/A').title()}")
+                            st.write(f"• Initial Difficulty: {safe_str(initial.get('initial_difficulty'), 'N/A').title()}")
 
                             # Count difficulty distribution
                             rounds = sim_config.get('rounds', [])
